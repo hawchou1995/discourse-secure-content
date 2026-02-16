@@ -1,1 +1,10 @@
-
+en:
+  js:
+    secure_login_btn_title: "Insert Login-only Block"
+    secure_reply_btn_title: "Insert Reply-only Block"
+    secure_login_default_text: "Content visible after login..."
+    secure_reply_default_text: "Content visible after reply..."
+    secure_mask_login: 'Content hidden. Please <a href="/login" class="secure-link-btn">Log In</a> to view.'
+    secure_mask_reply: 'Content hidden. Please <a href="#" class="secure-link-btn trigger-reply">Reply</a> to view.'
+    secure_mask_login_reply: 'Reply required. Please <a href="/login" class="secure-link-btn">Log In</a> first.'
+    secure_preview_prefix: "🔒 Hidden Content Preview"
