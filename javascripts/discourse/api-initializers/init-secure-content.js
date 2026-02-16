@@ -1,11 +1,62 @@
 import { apiInitializer } from "discourse/lib/api";
 import { ajax } from "discourse/lib/ajax";
-import I18n from "I18n";
 
 export default apiInitializer("0.11", (api) => {
   const currentUser = api.getCurrentUser();
 
-  // 1. 深度清理函数
+  // =========================================================
+  // 1. 独立的多语言字典 (回归最稳健的 JS 原生字典模式)
+  // =========================================================
+  const STRINGS = {
+    zh_CN: {
+      btn_login_title: "插入登录可见块",
+      btn_reply_title: "插入回复可见块",
+      raw_login_text: "此处内容登录后可见...",
+      raw_reply_text: "此处内容回复后可见...",
+      mask_login: `此内容仅供登录用户查看，请 <a href="/login" class="secure-link-btn">登录</a>`,
+      mask_reply: `此内容隐藏，请 <a href="#" class="secure-link-btn trigger-reply">回复本帖</a> 后查看`,
+      mask_login_reply: `此内容需回复可见，请先 <a href="/login" class="secure-link-btn">登录</a>`,
+      preview_prefix: "🔒 隐藏内容预览",
+    },
+    en: {
+      btn_login_title: "Insert Login-only Block",
+      btn_reply_title: "Insert Reply-only Block",
+      raw_login_text: "Content visible after login...",
+      raw_reply_text: "Content visible after reply...",
+      mask_login: `Content hidden. Please <a href="/login" class="secure-link-btn">Log In</a> to view.`,
+      mask_reply: `Content hidden. Please <a href="#" class="secure-link-btn trigger-reply">Reply</a> to view.`,
+      mask_login_reply: `Reply required. Please <a href="/login" class="secure-link-btn">Log In</a> first.`,
+      preview_prefix: "🔒 Hidden Content Preview",
+    }
+  };
+
+  const locale = I18n.currentLocale(); 
+  const langKey = locale.startsWith("zh") ? "zh_CN" : "en";
+  const R = STRINGS[langKey] || STRINGS["en"];
+
+  // =========================================================
+  // 2. 注入 Discourse 翻译系统 (双重挂载，完美兼容工具栏与编辑器)
+  // =========================================================
+  if (!I18n.translations[locale]) I18n.translations[locale] = {};
+  if (!I18n.translations[locale].js) I18n.translations[locale].js = {};
+  if (!I18n.translations[locale].js.composer) I18n.translations[locale].js.composer = {};
+  
+  const KEY_LOGIN_BTN = "secure_login_btn_title";
+  const KEY_REPLY_BTN = "secure_reply_btn_title";
+  const KEY_LOGIN_TEXT = "secure_login_default_text"; 
+  const KEY_REPLY_TEXT = "secure_reply_default_text"; 
+
+  // 工具栏按钮 title 需要读取 js 根目录
+  I18n.translations[locale].js[KEY_LOGIN_BTN] = R.btn_login_title;
+  I18n.translations[locale].js[KEY_REPLY_BTN] = R.btn_reply_title;
+  
+  // 编辑器 applySurround 强制读取 js.composer 目录
+  I18n.translations[locale].js.composer[KEY_LOGIN_TEXT] = R.raw_login_text;
+  I18n.translations[locale].js.composer[KEY_REPLY_TEXT] = R.raw_reply_text;
+
+  // =========================================================
+  // 3. 深度清理函数
+  // =========================================================
   function cleanInnerHtml(html) {
     if (!html) return "";
     let c = html;
@@ -14,15 +65,17 @@ export default apiInitializer("0.11", (api) => {
     return c;
   }
 
-  // 2. 编辑器按钮
+  // =========================================================
+  // 4. 编辑器按钮逻辑
+  // =========================================================
   api.onToolbarCreate((toolbar) => {
     toolbar.addButton({
       id: "insert_login_tag",
       group: "extras",
       icon: "lock",
-      title: "secure_login_btn_title", 
+      title: KEY_LOGIN_BTN, 
       perform: (e) => {
-        e.applySurround("\n[login]\n", "\n[/login]\n", "secure_login_default_text");
+        e.applySurround("\n[login]\n", "\n[/login]\n", KEY_LOGIN_TEXT);
       },
     });
 
@@ -30,14 +83,16 @@ export default apiInitializer("0.11", (api) => {
       id: "insert_reply_tag",
       group: "extras",
       icon: "comment", 
-      title: "secure_reply_btn_title", 
+      title: KEY_REPLY_BTN, 
       perform: (e) => {
-        e.applySurround("\n[reply]\n", "\n[/reply]\n", "secure_reply_default_text");
+        e.applySurround("\n[reply]\n", "\n[/reply]\n", KEY_REPLY_TEXT);
       },
     });
   });
 
-  // 3. 核心渲染逻辑
+  // =========================================================
+  // 5. 核心渲染逻辑
+  // =========================================================
   api.decorateCookedElement(
     async (element, helper) => {
       let html = element.innerHTML;
@@ -66,16 +121,16 @@ export default apiInitializer("0.11", (api) => {
 
       const topicId = helper ? helper.getModel()?.topic_id : null;
 
-      // 预览模式
+      // 预览模式逻辑
       if (!topicId && !document.body.classList.contains("topic-page")) {
         secureElements.forEach(el => {
             el.classList.add("secure-preview");
-            el.setAttribute("data-preview-prefix", I18n.t("secure_preview_prefix"));
+            el.setAttribute("data-preview-prefix", R.preview_prefix);
         });
         return; 
       }
 
-      // 权限检查
+      // --- 权限检查 ---
       let hasReplied = false;
       let replyCheckPromise = null;
       const needsReplyCheck = Array.from(secureElements).some(el => el.dataset.secureType === "reply");
@@ -90,7 +145,7 @@ export default apiInitializer("0.11", (api) => {
          hasReplied = await replyCheckPromise;
       }
 
-      // 渲染遮罩
+      // --- 渲染遮罩 ---
       secureElements.forEach((el) => {
         const type = el.dataset.secureType;
         let isLocked = true;
@@ -101,17 +156,17 @@ export default apiInitializer("0.11", (api) => {
           if (currentUser) {
             isLocked = false; 
           } else {
-            msgHtml = I18n.t("secure_mask_login");
+            msgHtml = R.mask_login;
             icon = "lock";
           }
         } else if (type === "reply") {
           if (!currentUser) {
-             msgHtml = I18n.t("secure_mask_login_reply");
+             msgHtml = R.mask_login_reply;
              icon = "lock"; 
           } else if (hasReplied || currentUser.admin || currentUser.moderator) {
             isLocked = false;
           } else {
-            msgHtml = I18n.t("secure_mask_reply");
+            msgHtml = R.mask_reply;
             icon = "reply"; 
           }
         }
