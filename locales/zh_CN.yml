@@ -1,1 +1,10 @@
-
+zh_CN:
+  js:
+    secure_login_btn_title: "插入登录可见块"
+    secure_reply_btn_title: "插入回复可见块"
+    secure_login_default_text: "此处内容登录后可见..."
+    secure_reply_default_text: "此处内容回复后可见..."
+    secure_mask_login: '此内容仅供登录用户查看，请 <a href="/login" class="secure-link-btn">登录</a>'
+    secure_mask_reply: '此内容隐藏，请 <a href="#" class="secure-link-btn trigger-reply">回复本帖</a> 后查看'
+    secure_mask_login_reply: '此内容需回复可见，请先 <a href="/login" class="secure-link-btn">登录</a>'
+    secure_preview_prefix: "🔒 隐藏内容预览"
