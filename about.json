@@ -1,1 +1,14 @@
 
+{
+  "name": "Secure Content Mask",
+  "component": true,
+  "license_url": "https://opensource.org/licenses/MIT",
+  "about_url": "https://github.com/hawchou1995/discourse-secure-content",
+  "authors": "hawchou1995",
+  "theme_version": "1.0",
+  "minimum_discourse_version": "2.8.0",
+  "assets": {
+  },
+  "color_schemes": {
+  }
+}
