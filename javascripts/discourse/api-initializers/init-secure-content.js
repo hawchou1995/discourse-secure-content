@@ -5,7 +5,7 @@ export default apiInitializer("0.11", (api) => {
   const currentUser = api.getCurrentUser();
 
   // =========================================================
-  // 1. 独立的多语言字典 (回归最稳健的 JS 原生字典模式)
+  // 1. 独立的多语言字典
   // =========================================================
   const STRINGS = {
     zh_CN: {
@@ -35,7 +35,7 @@ export default apiInitializer("0.11", (api) => {
   const R = STRINGS[langKey] || STRINGS["en"];
 
   // =========================================================
-  // 2. 注入 Discourse 翻译系统 (双重挂载，完美兼容工具栏与编辑器)
+  // 2. 注入 Discourse 翻译系统
   // =========================================================
   if (!I18n.translations[locale]) I18n.translations[locale] = {};
   if (!I18n.translations[locale].js) I18n.translations[locale].js = {};
@@ -46,11 +46,9 @@ export default apiInitializer("0.11", (api) => {
   const KEY_LOGIN_TEXT = "secure_login_default_text"; 
   const KEY_REPLY_TEXT = "secure_reply_default_text"; 
 
-  // 工具栏按钮 title 需要读取 js 根目录
   I18n.translations[locale].js[KEY_LOGIN_BTN] = R.btn_login_title;
   I18n.translations[locale].js[KEY_REPLY_BTN] = R.btn_reply_title;
   
-  // 编辑器 applySurround 强制读取 js.composer 目录
   I18n.translations[locale].js.composer[KEY_LOGIN_TEXT] = R.raw_login_text;
   I18n.translations[locale].js.composer[KEY_REPLY_TEXT] = R.raw_reply_text;
 
@@ -121,7 +119,6 @@ export default apiInitializer("0.11", (api) => {
 
       const topicId = helper ? helper.getModel()?.topic_id : null;
 
-      // 预览模式逻辑
       if (!topicId && !document.body.classList.contains("topic-page")) {
         secureElements.forEach(el => {
             el.classList.add("secure-preview");
@@ -221,7 +218,11 @@ export default apiInitializer("0.11", (api) => {
       el.style.display = "block";
   }
 
+  // =========================================================
+  // 6. 状态检查核心 (修复长帖子 Bug)
+  // =========================================================
   const replyStatusCache = new Map();
+  
   async function checkUserReplied(userId, topicId) {
     const key = `${userId}:${topicId}`;
     if (replyStatusCache.has(key)) return replyStatusCache.get(key);
@@ -232,19 +233,25 @@ export default apiInitializer("0.11", (api) => {
         return false;
     }
 
+    // 快速通道：如果用户最近的回复刚好在当前 DOM (当页) 内，直接解锁
     if (document.querySelector(`article[data-user-id="${userId}"]`)) {
         replyStatusCache.set(key, true);
         return true;
     }
 
+    // 终极验证通道：调用 API 查询真实状态
     try {
       const result = await ajax(`/t/${topicId}.json`);
       let hasPost = false;
-      if (result.details && typeof result.details.current_user_posted === 'boolean') {
-          hasPost = result.details.current_user_posted;
+      
+      // 【核心修复】：调用 Discourse API 真实的布尔值 user_data.posted，它不受参与者人数上限影响！
+      if (result.details && result.details.user_data && typeof result.details.user_data.posted === 'boolean') {
+          hasPost = result.details.user_data.posted;
       } else {
+          // Fallback 兜底：防止极端情况或 API 变动
           hasPost = result.details?.participants?.some(p => p.id === userId);
       }
+      
       replyStatusCache.set(key, !!hasPost);
       return !!hasPost;
     } catch (e) {
