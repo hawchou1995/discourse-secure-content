@@ -1,5 +1,5 @@
 .secure-wrapper { display: none; }
-.secure-unlocked { animation: fade-in 0.3s ease-out; display: block; }
+.secure-unlocked { animation: fade-in 0.3s ease-out; display: block; width: 100%; }
 
 @keyframes fade-in {
   from { opacity: 0; }
@@ -16,6 +16,8 @@
   background: var(--secondary-very-high);
   border-radius: 4px;
   color: var(--primary-medium);
+  width: 100%;
+  box-sizing: border-box;
   
   &::before {
     content: attr(data-preview-prefix);
@@ -39,6 +41,8 @@
   background: rgba(var(--primary-rgb), 0.03); 
   border: 1px solid rgba(var(--primary-rgb), 0.08);
   backdrop-filter: blur(10px); 
+  width: 100%;
+  box-sizing: border-box;
   
   @media (prefers-color-scheme: dark) {
     background: rgba(var(--primary-rgb), 0.08);
