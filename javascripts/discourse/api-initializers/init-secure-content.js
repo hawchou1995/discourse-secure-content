@@ -28,7 +28,7 @@ export default apiInitializer("0.11", (api) => {
     }
   }[lang];
 
-  // 1. 安全挂载编辑器按钮（绝对不会消失了）
+  // 1. 安全挂载编辑器按钮（再也不会消失了）
   api.onToolbarCreate((toolbar) => {
     toolbar.addButton({
       id: "insert_login_tag",
@@ -46,7 +46,6 @@ export default apiInitializer("0.11", (api) => {
     });
   });
 
-  // 2. 状态检查机制
   const replyStatusCache = new Map();
   async function checkUserReplied(userId, topicId) {
     const key = `${userId}:${topicId}`;
@@ -94,18 +93,29 @@ export default apiInitializer("0.11", (api) => {
       el.style.display = "block";
   }
 
-  // 3. 核心装饰器（暴力替换，无视自动生成的换行）
+  // 2. 核心装饰器（暴力替换，无视自动生成的换行）
   api.decorateCookedElement(
     async (element, helper) => {
       try {
         let html = element.innerHTML;
+        let hasChanged = false;
+
         if (/\[login\]|\[reply\]/i.test(html)) {
-          // 强力替换，连带 Discourse 自动加的 P 和 br 一起吃掉！
-          html = html.replace(/(?:<p>|<br\s*\/?>)*\s*\[login\]\s*(?:<\/p>|<br\s*\/?>)*/gi, '<div class="secure-wrapper" data-secure-type="login">')
-                     .replace(/(?:<p>|<br\s*\/?>)*\s*\[\/login\]\s*(?:<\/p>|<br\s*\/?>)*/gi, '</div>')
-                     .replace(/(?:<p>|<br\s*\/?>)*\s*\[reply\]\s*(?:<\/p>|<br\s*\/?>)*/gi, '<div class="secure-wrapper" data-secure-type="reply">')
-                     .replace(/(?:<p>|<br\s*\/?>)*\s*\[\/reply\]\s*(?:<\/p>|<br\s*\/?>)*/gi, '</div>');
+          // 强力剥离 Discourse 自动加的 P 和 br，杜绝无效隐藏！
+          html = html.replace(/<p>\s*\[(login|reply)\]\s*(<br\s*\/?>)?/gi, '[$1]')
+                     .replace(/(<br\s*\/?>)?\s*\[\/(login|reply)\]\s*<\/p>/gi, '[/$2]');
+                     
+          html = html.replace(/\[login\]/gi, '<div class="secure-wrapper" data-secure-type="login">')
+                     .replace(/\[\/login\]/gi, '</div>')
+                     .replace(/\[reply\]/gi, '<div class="secure-wrapper" data-secure-type="reply">')
+                     .replace(/\[\/reply\]/gi, '</div>');
           element.innerHTML = html;
+          hasChanged = true;
+        }
+
+        // 【关键防御】：如果 innerHTML 发生变化，立刻呼叫护盾插件给所有链接重新打上图标！
+        if (hasChanged && window.applyExternalLinkShield) {
+          window.applyExternalLinkShield(element);
         }
 
         const secureElements = element.querySelectorAll(".secure-wrapper");
@@ -117,7 +127,7 @@ export default apiInitializer("0.11", (api) => {
             if (match) topicId = match[1];
         }
 
-        // 预览框生效
+        // 预览框生效处理
         if (!topicId && !document.body.classList.contains("topic-page")) {
           secureElements.forEach(el => {
               el.classList.add("secure-preview");
@@ -155,7 +165,7 @@ export default apiInitializer("0.11", (api) => {
             el.classList.remove("secure-wrapper");
             el.classList.add("secure-unlocked");
             el.style.display = "block";
-            // 解锁后立即请求隔壁护盾打上图标
+            // 解锁后立即请求隔壁护盾给块内的链接加上图标！
             if (window.applyExternalLinkShield) {
                window.applyExternalLinkShield(el);
             }
@@ -165,6 +175,6 @@ export default apiInitializer("0.11", (api) => {
         console.error("Secure Content Error:", err);
       }
     },
-    { id: "secure-content-decorator" } // 移除了 onlyStream，预览和全页面生效！
+    { id: "secure-content-decorator" } // 移除了 onlyStream 属性，现在不仅在正文，还在 Callout 块和预览中生效！
   );
 });
