@@ -29,6 +29,7 @@ export default apiInitializer("0.11", (api) => {
     }
   }[lang];
 
+  // 1. 确保翻译就绪
   if (window.I18n && window.I18n.translations && window.I18n.translations[locale]) {
       let trans = window.I18n.translations[locale];
       trans.js = trans.js || {};
@@ -39,6 +40,7 @@ export default apiInitializer("0.11", (api) => {
       trans.js.composer.secure_reply_text = txt.txt_reply;
   }
 
+  // 2. 注册编辑器按钮
   api.onToolbarCreate((toolbar) => {
     toolbar.addButton({
       id: "insert_login_tag",
@@ -98,64 +100,98 @@ export default apiInitializer("0.11", (api) => {
       el.style.display = "flex"; 
   }
 
-  // 终极兼容版：通过文本替换 + 动态包裹，避免破坏 Glimmer/Ember 结构
-  api.decorateCookedElement(
-    async (element, helper) => {
+  // 终极杀手锏：利用原生 Range API 切割 DOM。直接作用于内存对象，让 Callout 无处遁形！
+  function wrapSecureTags(element, type) {
+      const startTag = `[${type}]`;
+      const endTag = `[/${type}]`;
+      let hasChanges = false;
+      let safety = 50; 
+
+      while (safety-- > 0) {
+          let walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
+          let startNode = null;
+          while (walker.nextNode()) {
+              if (walker.currentNode.nodeValue.toLowerCase().includes(startTag)) {
+                  startNode = walker.currentNode;
+                  break;
+              }
+          }
+          if (!startNode) break; 
+
+          // 切割起始标签
+          let startIdx = startNode.nodeValue.toLowerCase().indexOf(startTag);
+          let startTagNode = startNode.splitText(startIdx);
+          startTagNode.splitText(startTag.length);
+
+          // 把游走器定位到起始标签之后，确保不乱找
+          walker.currentNode = startTagNode;
+          let endNode = null;
+          while (walker.nextNode()) {
+              if (walker.currentNode.nodeValue.toLowerCase().includes(endTag)) {
+                  endNode = walker.currentNode;
+                  break;
+              }
+          }
+
+          if (!endNode) {
+              startTagNode.nodeValue = ""; 
+              break;
+          }
+
+          // 切割结束标签
+          let endIdx = endNode.nodeValue.toLowerCase().indexOf(endTag);
+          let endTagNode = endNode.splitText(endIdx);
+          endTagNode.splitText(endTag.length);
+
+          // 自动清理多余的换行标签，防止撑破 UI
+          const cleanupBr = (node) => {
+              if (node.previousSibling && node.previousSibling.nodeName === 'BR') node.previousSibling.remove();
+              if (node.nextSibling && node.nextSibling.nodeName === 'BR') node.nextSibling.remove();
+          };
+          cleanupBr(startTagNode);
+          cleanupBr(endTagNode);
+
+          // 创建原生选区打包内容（这是能活在 Callout 缓存里的唯一方法）
+          let range = document.createRange();
+          range.setStartAfter(startTagNode);
+          range.setEndBefore(endTagNode);
+
+          let content = range.extractContents();
+          let wrapper = document.createElement('span');
+          wrapper.className = 'secure-wrapper';
+          wrapper.dataset.secureType = type;
+          wrapper.style.display = 'block';
+          wrapper.style.width = '100%';
+          wrapper.appendChild(content);
+
+          range.insertNode(wrapper);
+
+          // 销毁首尾标签占位符
+          startTagNode.remove();
+          endTagNode.remove();
+          hasChanges = true;
+      }
+      return hasChanges;
+  }
+
+  // 统筹渲染函数
+  async function applySecureContent(element, helper) {
       try {
-        let hasChanged = false;
-        
-        // 我们只在内部通过正则将标签转换，避免使用 Range API 造成的选区错误
-        // 同时确保外层用 span 避免 p 标签冲突
-        const processHtml = (html) => {
-            let tempHtml = html;
-            const regexLogin = /\[login\]([\s\S]*?)\[\/login\]/gi;
-            const regexReply = /\[reply\]([\s\S]*?)\[\/reply\]/gi;
+        let changedLogin = wrapSecureTags(element, 'login');
+        let changedReply = wrapSecureTags(element, 'reply');
 
-            if (regexLogin.test(tempHtml)) {
-                tempHtml = tempHtml.replace(regexLogin, '<span class="secure-wrapper" data-secure-type="login" style="display:block;width:100%;">$1</span>');
-                hasChanged = true;
-            }
-            if (regexReply.test(tempHtml)) {
-                tempHtml = tempHtml.replace(regexReply, '<span class="secure-wrapper" data-secure-type="reply" style="display:block;width:100%;">$1</span>');
-                hasChanged = true;
-            }
-            
-            // 清理残留的换行和空标签，防止影响排版
-            tempHtml = tempHtml.replace(/<br>\s*<span class="secure-wrapper"/gi, '<span class="secure-wrapper"');
-            tempHtml = tempHtml.replace(/<\/span>\s*<br>/gi, '</span>');
-
-            return tempHtml;
-        };
-
-        // 如果在 Glimmer 组件 (Callout) 内部，我们需要找到包含文本的最小单位
-        // Glimmer 倾向于把内容放在 p 标签或特定的 content div 中
-        if (element.classList.contains("callout-content") || element.closest(".callout-content")) {
-             // 针对 Callout 组件，我们对其内部的段落进行操作，避免触碰它的外围结构
-             const paragraphs = element.querySelectorAll('p');
-             if (paragraphs.length > 0) {
-                 paragraphs.forEach(p => {
-                     const newHtml = processHtml(p.innerHTML);
-                     if (p.innerHTML !== newHtml) p.innerHTML = newHtml;
-                 });
-             } else {
-                 // 如果没有 p 标签，直接处理内容
-                 const newHtml = processHtml(element.innerHTML);
-                 if (element.innerHTML !== newHtml) element.innerHTML = newHtml;
-             }
-        } else {
-            // 普通帖子的处理
-            const newHtml = processHtml(element.innerHTML);
-            if (element.innerHTML !== newHtml) element.innerHTML = newHtml;
-        }
-
-        const secureElements = element.querySelectorAll(".secure-wrapper");
+        const secureElements = element.querySelectorAll(".secure-wrapper:not(.processed)");
         
         if (!secureElements.length) {
-            if (hasChanged && window.applyExternalLinkShield) {
+            // 如果没有隐藏内容，但发生了替换，立刻呼叫护盾加图标
+            if ((changedLogin || changedReply) && window.applyExternalLinkShield) {
                 window.applyExternalLinkShield(element);
             }
             return;
         }
+        
+        // 打上标记防止死循环
+        secureElements.forEach(el => el.classList.add("processed"));
 
         let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.id || helper?.widget?.model?.topic_id || helper?.widget?.model?.id;
         if (!topicId) {
@@ -163,6 +199,7 @@ export default apiInitializer("0.11", (api) => {
             if (match) topicId = match[1];
         }
 
+        // 预览框生效处理
         if (!topicId && !document.body.classList.contains("topic-page")) {
           secureElements.forEach(el => {
               el.classList.add("secure-preview");
@@ -197,17 +234,35 @@ export default apiInitializer("0.11", (api) => {
           if (isLocked) {
             renderMask(el, type, icon, msgHtml);
           } else {
-            // 解锁
             el.classList.remove("secure-wrapper");
             el.classList.add("secure-unlocked");
             el.style.display = "block";
-            // 呼叫护盾插件
             if (window.applyExternalLinkShield) window.applyExternalLinkShield(el);
           }
         });
       } catch (err) {
         console.error("Secure Content Error:", err);
       }
+  }
+
+  // 最终挂载：挂载 Decorator + MutationObserver 双保险
+  api.decorateCookedElement(
+    (element, helper) => {
+        // 第一重保险：直接处理（这能修改 Callout 内存里的节点）
+        applySecureContent(element, helper);
+
+        // 第二重保险：监视 Callout 延迟渲染等动作
+        if (typeof MutationObserver !== "undefined") {
+            let isProcessing = false;
+            const observer = new MutationObserver(() => {
+                if (isProcessing) return;
+                isProcessing = true;
+                applySecureContent(element, helper).finally(() => {
+                    isProcessing = false;
+                });
+            });
+            observer.observe(element, { childList: true, subtree: true });
+        }
     },
     { id: "secure-content-decorator" } 
   );
