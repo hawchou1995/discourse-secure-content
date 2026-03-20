@@ -4,9 +4,6 @@ import { ajax } from "discourse/lib/ajax";
 export default apiInitializer("0.11", (api) => {
   const currentUser = api.getCurrentUser();
 
-  // =========================================================
-  // 1. 独立的多语言字典
-  // =========================================================
   const STRINGS = {
     zh_CN: {
       btn_login_title: "插入登录可见块",
@@ -34,9 +31,6 @@ export default apiInitializer("0.11", (api) => {
   const langKey = locale.startsWith("zh") ? "zh_CN" : "en";
   const R = STRINGS[langKey] || STRINGS["en"];
 
-  // =========================================================
-  // 2. 注入 Discourse 翻译系统
-  // =========================================================
   if (!I18n.translations[locale]) I18n.translations[locale] = {};
   if (!I18n.translations[locale].js) I18n.translations[locale].js = {};
   if (!I18n.translations[locale].js.composer) I18n.translations[locale].js.composer = {};
@@ -48,13 +42,9 @@ export default apiInitializer("0.11", (api) => {
 
   I18n.translations[locale].js[KEY_LOGIN_BTN] = R.btn_login_title;
   I18n.translations[locale].js[KEY_REPLY_BTN] = R.btn_reply_title;
-  
   I18n.translations[locale].js.composer[KEY_LOGIN_TEXT] = R.raw_login_text;
   I18n.translations[locale].js.composer[KEY_REPLY_TEXT] = R.raw_reply_text;
 
-  // =========================================================
-  // 3. 深度清理函数
-  // =========================================================
   function cleanInnerHtml(html) {
     if (!html) return "";
     let c = html;
@@ -63,9 +53,6 @@ export default apiInitializer("0.11", (api) => {
     return c;
   }
 
-  // =========================================================
-  // 4. 编辑器按钮逻辑
-  // =========================================================
   api.onToolbarCreate((toolbar) => {
     toolbar.addButton({
       id: "insert_login_tag",
@@ -88,9 +75,6 @@ export default apiInitializer("0.11", (api) => {
     });
   });
 
-// =========================================================
-  // 5. 核心渲染逻辑
-  // =========================================================
   api.decorateCookedElement(
     async (element, helper) => {
       let html = element.innerHTML;
@@ -113,20 +97,12 @@ export default apiInitializer("0.11", (api) => {
       }
 
       if (hasChanged) {
-        // 【关键修复】：在暴力重写 DOM 之前，强行剥离“外部链接护盾”留下的标记！
-        // 这样在 DOM 重建后，护盾插件的 MutationObserver 就会将其视为新链接，重新绑定点击弹窗事件！
-        html = html.replace(/\s*data-security-level="[^"]*"/gi, "");
-        html = html.replace(/\s*data-has-shield-listener="[^"]*"/gi, "");
-        
         element.innerHTML = html;
       }
 
       const secureElements = element.querySelectorAll(".secure-wrapper");
       if (!secureElements.length) return;
       
-      // ... 下面的代码保持不变 ...
-      const topicId = helper ? helper.getModel()?.topic_id : null;
-
       const topicId = helper ? helper.getModel()?.topic_id : null;
 
       if (!topicId && !document.body.classList.contains("topic-page")) {
@@ -137,7 +113,6 @@ export default apiInitializer("0.11", (api) => {
         return; 
       }
 
-      // --- 权限检查 ---
       let hasReplied = false;
       let replyCheckPromise = null;
       const needsReplyCheck = Array.from(secureElements).some(el => el.dataset.secureType === "reply");
@@ -152,7 +127,6 @@ export default apiInitializer("0.11", (api) => {
          hasReplied = await replyCheckPromise;
       }
 
-      // --- 渲染遮罩 ---
       secureElements.forEach((el) => {
         const type = el.dataset.secureType;
         let isLocked = true;
@@ -228,9 +202,6 @@ export default apiInitializer("0.11", (api) => {
       el.style.display = "block";
   }
 
-  // =========================================================
-  // 6. 状态检查核心 (修复长帖子 Bug)
-  // =========================================================
   const replyStatusCache = new Map();
   
   async function checkUserReplied(userId, topicId) {
@@ -243,25 +214,19 @@ export default apiInitializer("0.11", (api) => {
         return false;
     }
 
-    // 快速通道：如果用户最近的回复刚好在当前 DOM (当页) 内，直接解锁
     if (document.querySelector(`article[data-user-id="${userId}"]`)) {
         replyStatusCache.set(key, true);
         return true;
     }
 
-    // 终极验证通道：调用 API 查询真实状态
     try {
       const result = await ajax(`/t/${topicId}.json`);
       let hasPost = false;
-      
-      // 【核心修复】：调用 Discourse API 真实的布尔值 user_data.posted，它不受参与者人数上限影响！
       if (result.details && result.details.user_data && typeof result.details.user_data.posted === 'boolean') {
           hasPost = result.details.user_data.posted;
       } else {
-          // Fallback 兜底：防止极端情况或 API 变动
           hasPost = result.details?.participants?.some(p => p.id === userId);
       }
-      
       replyStatusCache.set(key, !!hasPost);
       return !!hasPost;
     } catch (e) {
