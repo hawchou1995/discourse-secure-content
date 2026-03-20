@@ -28,7 +28,6 @@ export default apiInitializer("0.11", (api) => {
     }
   }[lang];
 
-  // 1. 安全挂载编辑器按钮（再也不会消失了）
   api.onToolbarCreate((toolbar) => {
     toolbar.addButton({
       id: "insert_login_tag",
@@ -50,23 +49,18 @@ export default apiInitializer("0.11", (api) => {
   async function checkUserReplied(userId, topicId) {
     const key = `${userId}:${topicId}`;
     if (replyStatusCache.has(key)) return replyStatusCache.get(key);
-    
     if (currentUser && currentUser.post_count === 0) {
-        replyStatusCache.set(key, false);
-        return false;
+        replyStatusCache.set(key, false); return false;
     }
     if (document.querySelector(`article[data-user-id="${userId}"]`)) {
-        replyStatusCache.set(key, true);
-        return true;
+        replyStatusCache.set(key, true); return true;
     }
     try {
       const result = await ajax(`/t/${topicId}.json`);
       let hasPost = result.details?.user_data?.posted || result.details?.participants?.some(p => p.id === userId) || false;
       replyStatusCache.set(key, hasPost);
       return hasPost;
-    } catch (e) {
-      return false;
-    }
+    } catch (e) { return false; }
   }
 
   function renderMask(el, type, icon, msgHtml) {
@@ -93,7 +87,6 @@ export default apiInitializer("0.11", (api) => {
       el.style.display = "block";
   }
 
-  // 2. 核心装饰器（暴力替换，无视自动生成的换行）
   api.decorateCookedElement(
     async (element, helper) => {
       try {
@@ -101,19 +94,18 @@ export default apiInitializer("0.11", (api) => {
         let hasChanged = false;
 
         if (/\[login\]|\[reply\]/i.test(html)) {
-          // 强力剥离 Discourse 自动加的 P 和 br，杜绝无效隐藏！
-          html = html.replace(/<p>\s*\[(login|reply)\]\s*(<br\s*\/?>)?/gi, '[$1]')
-                     .replace(/(<br\s*\/?>)?\s*\[\/(login|reply)\]\s*<\/p>/gi, '[/$2]');
-                     
-          html = html.replace(/\[login\]/gi, '<div class="secure-wrapper" data-secure-type="login">')
-                     .replace(/\[\/login\]/gi, '</div>')
-                     .replace(/\[reply\]/gi, '<div class="secure-wrapper" data-secure-type="reply">')
-                     .replace(/\[\/reply\]/gi, '</div>');
+          // 极度剥离：不管外围是 P 还是 br，全部替换干净
+          html = html.replace(/(?:<p>)?\s*\[login\]\s*(?:<br\s*\/?>)?/gi, '[login]')
+                     .replace(/(?:<br\s*\/?>)?\s*\[\/login\]\s*(?:<\/p>)?/gi, '[/login]')
+                     .replace(/(?:<p>)?\s*\[reply\]\s*(?:<br\s*\/?>)?/gi, '[reply]')
+                     .replace(/(?:<br\s*\/?>)?\s*\[\/reply\]\s*(?:<\/p>)?/gi, '[/reply]');
+
+          html = html.replace(/\[login\]([\s\S]*?)\[\/login\]/gim, '<div class="secure-wrapper" data-secure-type="login">$1</div>')
+                     .replace(/\[reply\]([\s\S]*?)\[\/reply\]/gim, '<div class="secure-wrapper" data-secure-type="reply">$1</div>');
           element.innerHTML = html;
           hasChanged = true;
         }
 
-        // 【关键防御】：如果 innerHTML 发生变化，立刻呼叫护盾插件给所有链接重新打上图标！
         if (hasChanged && window.applyExternalLinkShield) {
           window.applyExternalLinkShield(element);
         }
@@ -127,7 +119,6 @@ export default apiInitializer("0.11", (api) => {
             if (match) topicId = match[1];
         }
 
-        // 预览框生效处理
         if (!topicId && !document.body.classList.contains("topic-page")) {
           secureElements.forEach(el => {
               el.classList.add("secure-preview");
@@ -165,16 +156,13 @@ export default apiInitializer("0.11", (api) => {
             el.classList.remove("secure-wrapper");
             el.classList.add("secure-unlocked");
             el.style.display = "block";
-            // 解锁后立即请求隔壁护盾给块内的链接加上图标！
-            if (window.applyExternalLinkShield) {
-               window.applyExternalLinkShield(el);
-            }
+            if (window.applyExternalLinkShield) window.applyExternalLinkShield(el);
           }
         });
       } catch (err) {
         console.error("Secure Content Error:", err);
       }
     },
-    { id: "secure-content-decorator" } // 移除了 onlyStream 属性，现在不仅在正文，还在 Callout 块和预览中生效！
+    { id: "secure-content-decorator" } 
   );
 });
