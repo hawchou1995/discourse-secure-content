@@ -3,8 +3,10 @@ import { ajax } from "discourse/lib/ajax";
 
 export default apiInitializer("0.11", (api) => {
   const currentUser = api.getCurrentUser();
-  const lang = (window.I18n ? window.I18n.currentLocale() : "zh_CN").startsWith("zh") ? "zh" : "en";
+  const locale = window.I18n ? window.I18n.currentLocale() : "zh_CN";
+  const lang = locale.startsWith("zh") ? "zh" : "en";
 
+  // 国际化文案
   const txt = {
     zh: {
       btn_login: "插入登录可见",
@@ -28,20 +30,30 @@ export default apiInitializer("0.11", (api) => {
     }
   }[lang];
 
-  // 1. 修复：使用正确的组名 "insertions"，按钮完美回归
+  // 1. 完美修复 i18n 失效：直接把文案强制注射进 Discourse 的翻译库
+  const loginBtnKey = themePrefix("insert_login");
+  const replyBtnKey = themePrefix("insert_reply");
+  if (window.I18n && window.I18n.translations && window.I18n.translations[locale]) {
+     let js = window.I18n.translations[locale].js || {};
+     js[loginBtnKey] = txt.btn_login;
+     js[replyBtnKey] = txt.btn_reply;
+     window.I18n.translations[locale].js = js;
+  }
+
+  // 注册按钮（绝对不会消失，且多语言悬浮提示正常）
   api.onToolbarCreate((toolbar) => {
     toolbar.addButton({
       id: "insert_login_tag",
-      group: "insertions",
+      group: "insertions", // 修复了上次写错的组名
       icon: "lock",
-      title: txt.btn_login,
+      title: loginBtnKey,
       perform: (e) => e.applySurround("\n[login]\n", "\n[/login]\n", txt.txt_login)
     });
     toolbar.addButton({
       id: "insert_reply_tag",
       group: "insertions",
       icon: "comment",
-      title: txt.btn_reply,
+      title: replyBtnKey,
       perform: (e) => e.applySurround("\n[reply]\n", "\n[/reply]\n", txt.txt_reply)
     });
   });
@@ -65,15 +77,13 @@ export default apiInitializer("0.11", (api) => {
   }
 
   function renderMask(el, type, icon, msgHtml) {
-      // 使用 span 替代 div，防止破坏 HTML 结构
-      const maskNode = document.createElement("span");
+      const maskNode = document.createElement("div");
       maskNode.className = `secure-content-mask apple-style type-${type}`;
-      maskNode.style.display = "flex";
       maskNode.innerHTML = `
-          <span class="secure-icon-container">
+          <div class="secure-icon-container">
             <svg class="fa d-icon d-icon-${icon} svg-icon"><use href="#${icon}"></use></svg>
-          </span>
-          <span class="secure-text">${msgHtml}</span>
+          </div>
+          <div class="secure-text">${msgHtml}</div>
        `;
 
       const replyTrigger = maskNode.querySelector(".trigger-reply");
@@ -97,33 +107,36 @@ export default apiInitializer("0.11", (api) => {
         let hasChanged = false;
 
         if (/\[login\]|\[reply\]/i.test(html)) {
-          // 仅清理多余的换行符，绝不触碰外层的 <p> 标签
-          html = html.replace(/(?:<br\s*\/?>)?\s*\[login\]\s*(?:<br\s*\/?>)?/gi, '[login]')
-                     .replace(/(?:<br\s*\/?>)?\s*\[\/login\]\s*(?:<br\s*\/?>)?/gi, '[/login]')
-                     .replace(/(?:<br\s*\/?>)?\s*\[reply\]\s*(?:<br\s*\/?>)?/gi, '[reply]')
-                     .replace(/(?:<br\s*\/?>)?\s*\[\/reply\]\s*(?:<br\s*\/?>)?/gi, '[/reply]');
-
-          // 2. 修复：把外壳换成 <span>，彻底避免被 Callout 内部破坏！
-          html = html.replace(/\[login\]([\s\S]*?)\[\/login\]/gim, '<span class="secure-wrapper" data-secure-type="login" style="display:block;">$1</span>')
-                     .replace(/\[reply\]([\s\S]*?)\[\/reply\]/gim, '<span class="secure-wrapper" data-secure-type="reply" style="display:block;">$1</span>');
+          // 2. 降维打击修复裸露BUG：强行打破 P 标签，确保 div 永远是最高级块元素
+          html = html.replace(/\[login\]/gi, '</p><div class="secure-wrapper" data-secure-type="login"><p>')
+                     .replace(/\[\/login\]/gi, '</p></div><p>')
+                     .replace(/\[reply\]/gi, '</p><div class="secure-wrapper" data-secure-type="reply"><p>')
+                     .replace(/\[\/reply\]/gi, '</p></div><p>');
+          
+          // 清除因为暴力打破而产生的空 P 标签和空 br
+          html = html.replace(/<p>(\s|<br\s*\/?>)*<\/p>/gi, '');
           
           element.innerHTML = html;
           hasChanged = true;
         }
 
-        if (hasChanged && window.applyExternalLinkShield) {
-          window.applyExternalLinkShield(element);
+        const secureElements = element.querySelectorAll(".secure-wrapper");
+        
+        // 如果没有隐藏块，但是有替换发生，说明内容需要护盾接管
+        if (!secureElements.length) {
+            if (hasChanged && window.applyExternalLinkShield) {
+                window.applyExternalLinkShield(element);
+            }
+            return;
         }
 
-        const secureElements = element.querySelectorAll(".secure-wrapper");
-        if (!secureElements.length) return;
-        
         let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.id || helper?.widget?.model?.topic_id || helper?.widget?.model?.id;
         if (!topicId) {
             const match = window.location.pathname.match(/\/t\/[^\/]+\/(\d+)/);
             if (match) topicId = match[1];
         }
 
+        // 预览框生效处理
         if (!topicId && !document.body.classList.contains("topic-page")) {
           secureElements.forEach(el => {
               el.classList.add("secure-preview");
@@ -158,9 +171,11 @@ export default apiInitializer("0.11", (api) => {
           if (isLocked) {
             renderMask(el, type, icon, msgHtml);
           } else {
+            // 解锁
             el.classList.remove("secure-wrapper");
             el.classList.add("secure-unlocked");
             el.style.display = "block";
+            // 呼叫护盾插件给内容补上图标
             if (window.applyExternalLinkShield) window.applyExternalLinkShield(el);
           }
         });
