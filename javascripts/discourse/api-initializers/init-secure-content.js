@@ -98,25 +98,54 @@ export default apiInitializer("0.11", (api) => {
       el.style.display = "flex"; 
   }
 
+  // 终极兼容版：通过文本替换 + 动态包裹，避免破坏 Glimmer/Ember 结构
   api.decorateCookedElement(
     async (element, helper) => {
       try {
-        let html = element.innerHTML;
         let hasChanged = false;
+        
+        // 我们只在内部通过正则将标签转换，避免使用 Range API 造成的选区错误
+        // 同时确保外层用 span 避免 p 标签冲突
+        const processHtml = (html) => {
+            let tempHtml = html;
+            const regexLogin = /\[login\]([\s\S]*?)\[\/login\]/gi;
+            const regexReply = /\[reply\]([\s\S]*?)\[\/reply\]/gi;
 
-        if (/\[login\]|\[reply\]/i.test(html)) {
-          // 清除无用换行
-          html = html.replace(/(<br\s*\/?>)?\s*\[login\]\s*(<br\s*\/?>)?/gi, '[login]')
-                     .replace(/(<br\s*\/?>)?\s*\[\/login\]\s*(<br\s*\/?>)?/gi, '[/login]')
-                     .replace(/(<br\s*\/?>)?\s*\[reply\]\s*(<br\s*\/?>)?/gi, '[reply]')
-                     .replace(/(<br\s*\/?>)?\s*\[\/reply\]\s*(<br\s*\/?>)?/gi, '[/reply]');
+            if (regexLogin.test(tempHtml)) {
+                tempHtml = tempHtml.replace(regexLogin, '<span class="secure-wrapper" data-secure-type="login" style="display:block;width:100%;">$1</span>');
+                hasChanged = true;
+            }
+            if (regexReply.test(tempHtml)) {
+                tempHtml = tempHtml.replace(regexReply, '<span class="secure-wrapper" data-secure-type="reply" style="display:block;width:100%;">$1</span>');
+                hasChanged = true;
+            }
+            
+            // 清理残留的换行和空标签，防止影响排版
+            tempHtml = tempHtml.replace(/<br>\s*<span class="secure-wrapper"/gi, '<span class="secure-wrapper"');
+            tempHtml = tempHtml.replace(/<\/span>\s*<br>/gi, '</span>');
 
-          // 核心：使用 span 包裹，完美兼容 Markdown 和 Callout 生成的 <p>
-          html = html.replace(/\[login\]([\s\S]*?)\[\/login\]/gim, '<span class="secure-wrapper" data-secure-type="login" style="display:block;width:100%;">$1</span>')
-                     .replace(/\[reply\]([\s\S]*?)\[\/reply\]/gim, '<span class="secure-wrapper" data-secure-type="reply" style="display:block;width:100%;">$1</span>');
+            return tempHtml;
+        };
 
-          element.innerHTML = html;
-          hasChanged = true;
+        // 如果在 Glimmer 组件 (Callout) 内部，我们需要找到包含文本的最小单位
+        // Glimmer 倾向于把内容放在 p 标签或特定的 content div 中
+        if (element.classList.contains("callout-content") || element.closest(".callout-content")) {
+             // 针对 Callout 组件，我们对其内部的段落进行操作，避免触碰它的外围结构
+             const paragraphs = element.querySelectorAll('p');
+             if (paragraphs.length > 0) {
+                 paragraphs.forEach(p => {
+                     const newHtml = processHtml(p.innerHTML);
+                     if (p.innerHTML !== newHtml) p.innerHTML = newHtml;
+                 });
+             } else {
+                 // 如果没有 p 标签，直接处理内容
+                 const newHtml = processHtml(element.innerHTML);
+                 if (element.innerHTML !== newHtml) element.innerHTML = newHtml;
+             }
+        } else {
+            // 普通帖子的处理
+            const newHtml = processHtml(element.innerHTML);
+            if (element.innerHTML !== newHtml) element.innerHTML = newHtml;
         }
 
         const secureElements = element.querySelectorAll(".secure-wrapper");
@@ -168,9 +197,11 @@ export default apiInitializer("0.11", (api) => {
           if (isLocked) {
             renderMask(el, type, icon, msgHtml);
           } else {
+            // 解锁
             el.classList.remove("secure-wrapper");
             el.classList.add("secure-unlocked");
             el.style.display = "block";
+            // 呼叫护盾插件
             if (window.applyExternalLinkShield) window.applyExternalLinkShield(el);
           }
         });
