@@ -29,7 +29,6 @@ export default apiInitializer("0.11", (api) => {
     }
   }[lang];
 
-  // 1. 确保翻译就绪
   if (window.I18n && window.I18n.translations && window.I18n.translations[locale]) {
       let trans = window.I18n.translations[locale];
       trans.js = trans.js || {};
@@ -40,7 +39,6 @@ export default apiInitializer("0.11", (api) => {
       trans.js.composer.secure_reply_text = txt.txt_reply;
   }
 
-  // 2. 注册编辑器按钮
   api.onToolbarCreate((toolbar) => {
     toolbar.addButton({
       id: "insert_login_tag",
@@ -77,7 +75,7 @@ export default apiInitializer("0.11", (api) => {
   }
 
   function renderMask(el, type, icon, msgHtml) {
-      const maskNode = document.createElement("span");
+      const maskNode = document.createElement("div");
       maskNode.className = `secure-content-mask apple-style type-${type}`;
       maskNode.innerHTML = `
           <span class="secure-icon-container">
@@ -100,7 +98,6 @@ export default apiInitializer("0.11", (api) => {
       el.style.display = "flex"; 
   }
 
-  // 终极杀手锏：利用原生 Range API 切割 DOM。直接作用于内存对象，让 Callout 无处遁形！
   function wrapSecureTags(element, type) {
       const startTag = `[${type}]`;
       const endTag = `[/${type}]`;
@@ -118,12 +115,10 @@ export default apiInitializer("0.11", (api) => {
           }
           if (!startNode) break; 
 
-          // 切割起始标签
           let startIdx = startNode.nodeValue.toLowerCase().indexOf(startTag);
           let startTagNode = startNode.splitText(startIdx);
           startTagNode.splitText(startTag.length);
 
-          // 把游走器定位到起始标签之后，确保不乱找
           walker.currentNode = startTagNode;
           let endNode = null;
           while (walker.nextNode()) {
@@ -138,76 +133,82 @@ export default apiInitializer("0.11", (api) => {
               break;
           }
 
-          // 切割结束标签
           let endIdx = endNode.nodeValue.toLowerCase().indexOf(endTag);
           let endTagNode = endNode.splitText(endIdx);
           endTagNode.splitText(endTag.length);
 
-          // 自动清理多余的换行标签，防止撑破 UI
-          const cleanupBr = (node) => {
-              if (node.previousSibling && node.previousSibling.nodeName === 'BR') node.previousSibling.remove();
-              if (node.nextSibling && node.nextSibling.nodeName === 'BR') node.nextSibling.remove();
-          };
-          cleanupBr(startTagNode);
-          cleanupBr(endTagNode);
-
-          // 创建原生选区打包内容（这是能活在 Callout 缓存里的唯一方法）
+          // 封装内容
           let range = document.createRange();
           range.setStartAfter(startTagNode);
           range.setEndBefore(endTagNode);
 
           let content = range.extractContents();
-          let wrapper = document.createElement('span');
+          let wrapper = document.createElement('div');
           wrapper.className = 'secure-wrapper';
           wrapper.dataset.secureType = type;
-          wrapper.style.display = 'block';
-          wrapper.style.width = '100%';
           wrapper.appendChild(content);
 
           range.insertNode(wrapper);
 
-          // 销毁首尾标签占位符
+          // 【强力消除多余空行】：扫描并删除被 Discourse 添加在块首尾的换行符
+          let prevWalk = wrapper.previousSibling;
+          while(prevWalk && (prevWalk.nodeName === 'BR' || (prevWalk.nodeType === Node.TEXT_NODE && prevWalk.nodeValue.trim() === ''))) {
+              let tmp = prevWalk.previousSibling;
+              prevWalk.remove();
+              prevWalk = tmp;
+          }
+          let nextWalk = wrapper.nextSibling;
+          while(nextWalk && (nextWalk.nodeName === 'BR' || (nextWalk.nodeType === Node.TEXT_NODE && nextWalk.nodeValue.trim() === ''))) {
+              let tmp = nextWalk.nextSibling;
+              nextWalk.remove();
+              nextWalk = tmp;
+          }
+
           startTagNode.remove();
           endTagNode.remove();
+
+          // 【强力消除空段落】：删除没有任何实质内容的遗留 P 标签
+          element.querySelectorAll('p').forEach(p => {
+              if (p.innerHTML.trim() === '' || p.innerHTML.trim() === '<br>') {
+                  p.remove();
+              }
+          });
+
           hasChanges = true;
       }
       return hasChanges;
   }
 
-  // 统筹渲染函数
   async function applySecureContent(element, helper) {
       try {
         let changedLogin = wrapSecureTags(element, 'login');
         let changedReply = wrapSecureTags(element, 'reply');
 
         const secureElements = element.querySelectorAll(".secure-wrapper:not(.processed)");
-        
         if (!secureElements.length) {
-            // 如果没有隐藏内容，但发生了替换，立刻呼叫护盾加图标
             if ((changedLogin || changedReply) && window.applyExternalLinkShield) {
                 window.applyExternalLinkShield(element);
             }
             return;
         }
         
-        // 打上标记防止死循环
         secureElements.forEach(el => el.classList.add("processed"));
+
+        // 【精准判定预览区】：通过查找最近的父级类名来 100% 确认是否处于发帖预览阶段
+        const isPreview = element.classList.contains("d-editor-preview") || element.closest(".d-editor-preview");
+        if (isPreview) {
+          secureElements.forEach(el => {
+              el.classList.add("secure-preview");
+              el.setAttribute("data-preview-prefix", txt.preview);
+          });
+          if (window.applyExternalLinkShield) window.applyExternalLinkShield(element);
+          return; 
+        }
 
         let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.id || helper?.widget?.model?.topic_id || helper?.widget?.model?.id;
         if (!topicId) {
             const match = window.location.pathname.match(/\/t\/[^\/]+\/(\d+)/);
             if (match) topicId = match[1];
-        }
-
-        // 预览框生效处理
-        if (!topicId && !document.body.classList.contains("topic-page")) {
-          secureElements.forEach(el => {
-              el.classList.add("secure-preview");
-              el.setAttribute("data-preview-prefix", txt.preview);
-              el.style.display = "block";
-          });
-          if (window.applyExternalLinkShield) window.applyExternalLinkShield(element);
-          return; 
         }
 
         let hasReplied = false;
@@ -236,7 +237,6 @@ export default apiInitializer("0.11", (api) => {
           } else {
             el.classList.remove("secure-wrapper");
             el.classList.add("secure-unlocked");
-            el.style.display = "block";
             if (window.applyExternalLinkShield) window.applyExternalLinkShield(el);
           }
         });
@@ -245,13 +245,9 @@ export default apiInitializer("0.11", (api) => {
       }
   }
 
-  // 最终挂载：挂载 Decorator + MutationObserver 双保险
   api.decorateCookedElement(
     (element, helper) => {
-        // 第一重保险：直接处理（这能修改 Callout 内存里的节点）
         applySecureContent(element, helper);
-
-        // 第二重保险：监视 Callout 延迟渲染等动作
         if (typeof MutationObserver !== "undefined") {
             let isProcessing = false;
             const observer = new MutationObserver(() => {
