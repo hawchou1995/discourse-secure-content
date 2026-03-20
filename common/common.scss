@@ -1,4 +1,7 @@
+/* 尚未解析时的默认隐藏 */
 .secure-wrapper { display: none; }
+
+/* 成功解锁后的真实内容 */
 .secure-unlocked { 
   animation: fade-in 0.3s ease-out; 
   display: block; 
@@ -14,16 +17,15 @@
 }
 
 /* =========================================
-   专属编辑器预览区的样式（高亮显示，以作区分）
+   专属编辑器预览区的样式（虚线边框+高亮Title）
    ========================================= */
-.secure-wrapper.secure-preview {
+.secure-preview {
   display: block !important;
-  border: 2px dashed var(--tertiary);
+  border: 2px dashed var(--tertiary-medium);
   padding: 14px 16px;
   margin: 0.5em 0;
   background: rgba(var(--tertiary-rgb), 0.05);
   border-radius: 8px;
-  color: var(--primary);
   width: 100%;
   box-sizing: border-box;
   position: relative;
@@ -32,19 +34,17 @@
     content: attr(data-preview-prefix);
     display: inline-block;
     font-weight: 700;
-    margin-bottom: 10px;
+    margin-bottom: 12px;
     color: var(--tertiary);
     font-size: 0.85em;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    background: var(--tertiary-low);
-    padding: 3px 8px;
+    background: rgba(var(--tertiary-rgb), 0.15);
+    padding: 4px 8px;
     border-radius: 4px;
   }
 }
 
 /* =========================================
-   实际帖子的遮罩样式（去除了边距，防止空行）
+   未解锁时的苹果风提示条
    ========================================= */
 .secure-content-mask.apple-style {
   display: flex;
@@ -52,7 +52,7 @@
   align-items: center;
   justify-content: flex-start;
   gap: 12px;
-  margin: 0; /* 强力消除隐藏块首尾自带的多余白距 */
+  margin: 0.5em 0; 
   padding: 12px 16px;
   border-radius: 10px;
   background: rgba(var(--primary-rgb), 0.03); 
@@ -82,7 +82,7 @@
   .secure-text {
     flex: 1;
     font-weight: 500;
-    margin: 0; /* 取消内部 P 标签导致的高度差 */
+    margin: 0; 
     
     a.secure-link-btn {
       color: var(--tertiary); 
