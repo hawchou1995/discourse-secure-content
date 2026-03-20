@@ -6,20 +6,12 @@ export default apiInitializer("0.11", (api) => {
 
   const STRINGS = {
     zh_CN: {
-      btn_login_title: "插入登录可见块",
-      btn_reply_title: "插入回复可见块",
-      raw_login_text: "此处内容登录后可见...",
-      raw_reply_text: "此处内容回复后可见...",
       mask_login: `此内容仅供登录用户查看，请 <a href="/login" class="secure-link-btn">登录</a>`,
       mask_reply: `此内容隐藏，请 <a href="#" class="secure-link-btn trigger-reply">回复本帖</a> 后查看`,
       mask_login_reply: `此内容需回复可见，请先 <a href="/login" class="secure-link-btn">登录</a>`,
       preview_prefix: "🔒 隐藏内容预览",
     },
     en: {
-      btn_login_title: "Insert Login-only Block",
-      btn_reply_title: "Insert Reply-only Block",
-      raw_login_text: "Content visible after login...",
-      raw_reply_text: "Content visible after reply...",
       mask_login: `Content hidden. Please <a href="/login" class="secure-link-btn">Log In</a> to view.`,
       mask_reply: `Content hidden. Please <a href="#" class="secure-link-btn trigger-reply">Reply</a> to view.`,
       mask_login_reply: `Reply required. Please <a href="/login" class="secure-link-btn">Log In</a> first.`,
@@ -27,53 +19,11 @@ export default apiInitializer("0.11", (api) => {
     }
   };
 
-  const locale = I18n.currentLocale(); 
-  const langKey = locale.startsWith("zh") ? "zh_CN" : "en";
-  const R = STRINGS[langKey] || STRINGS["en"];
-
-  if (!I18n.translations[locale]) I18n.translations[locale] = {};
-  if (!I18n.translations[locale].js) I18n.translations[locale].js = {};
-  if (!I18n.translations[locale].js.composer) I18n.translations[locale].js.composer = {};
-  
-  const KEY_LOGIN_BTN = "secure_login_btn_title";
-  const KEY_REPLY_BTN = "secure_reply_btn_title";
-  const KEY_LOGIN_TEXT = "secure_login_default_text"; 
-  const KEY_REPLY_TEXT = "secure_reply_default_text"; 
-
-  I18n.translations[locale].js[KEY_LOGIN_BTN] = R.btn_login_title;
-  I18n.translations[locale].js[KEY_REPLY_BTN] = R.btn_reply_title;
-  I18n.translations[locale].js.composer[KEY_LOGIN_TEXT] = R.raw_login_text;
-  I18n.translations[locale].js.composer[KEY_REPLY_TEXT] = R.raw_reply_text;
-
-  function cleanInnerHtml(html) {
-    if (!html) return "";
-    let c = html;
-    c = c.replace(/^(\s*<br\s*\/?>\s*|\s*<p>\s*|\s+)+/gi, "");
-    c = c.replace(/(\s*<br\s*\/?>\s*|\s*<\/p>\s*|\s+)+$/gi, "");
-    return c;
-  }
-
-  api.onToolbarCreate((toolbar) => {
-    toolbar.addButton({
-      id: "insert_login_tag",
-      group: "extras",
-      icon: "lock",
-      title: KEY_LOGIN_BTN, 
-      perform: (e) => {
-        e.applySurround("\n[login]\n", "\n[/login]\n", KEY_LOGIN_TEXT);
-      },
-    });
-
-    toolbar.addButton({
-      id: "insert_reply_tag",
-      group: "extras",
-      icon: "comment", 
-      title: KEY_REPLY_BTN, 
-      perform: (e) => {
-        e.applySurround("\n[reply]\n", "\n[/reply]\n", KEY_REPLY_TEXT);
-      },
-    });
-  });
+  const getLocText = (key) => {
+    const lang = window.I18n ? window.I18n.currentLocale() : "zh_CN";
+    const map = lang.startsWith("zh") ? STRINGS.zh_CN : STRINGS.en;
+    return map[key];
+  };
 
   const replyStatusCache = new Map();
   
@@ -140,33 +90,25 @@ export default apiInitializer("0.11", (api) => {
       el.style.display = "block";
   }
 
-  function unlockContent(el) {
-      el.classList.remove("secure-wrapper");
-      el.classList.add("secure-unlocked");
-      el.style.display = "block";
-      
-      // ⚠️ 关键代码：通知外部链接护盾，来接管这里面被刷掉的链接！
-      document.dispatchEvent(new CustomEvent("secureContentUnlocked", { detail: { element: el } }));
-  }
-
   api.decorateCookedElement(
     async (element, helper) => {
       try {
         let html = element.innerHTML;
         let hasChanged = false;
 
+        // 【终极防弹正则】无视任何 <p> 和 <br> 标签干扰
         if (/\[login\]/i.test(html)) {
           html = html.replace(
-             /\[login\]([\s\S]*?)\[\/login\]/gim, 
-             (m, p1) => `<div class="secure-wrapper" data-secure-type="login">${cleanInnerHtml(p1)}</div>`
+             /(?:<p>)?\s*\[login\]\s*(?:<br\s*\/?>)?\s*(?:<\/p>)?([\s\S]*?)(?:<p>)?\s*(?:<br\s*\/?>)?\s*\[\/login\]\s*(?:<\/p>)?/gim, 
+             '<div class="secure-wrapper" data-secure-type="login">$1</div>'
           );
           hasChanged = true;
         }
 
         if (/\[reply\]/i.test(html)) {
           html = html.replace(
-             /\[reply\]([\s\S]*?)\[\/reply\]/gim, 
-             (m, p1) => `<div class="secure-wrapper" data-secure-type="reply">${cleanInnerHtml(p1)}</div>`
+             /(?:<p>)?\s*\[reply\]\s*(?:<br\s*\/?>)?\s*(?:<\/p>)?([\s\S]*?)(?:<p>)?\s*(?:<br\s*\/?>)?\s*\[\/reply\]\s*(?:<\/p>)?/gim, 
+             '<div class="secure-wrapper" data-secure-type="reply">$1</div>'
           );
           hasChanged = true;
         }
@@ -179,12 +121,10 @@ export default apiInitializer("0.11", (api) => {
         if (!secureElements.length) return;
         
         let topicId = null;
-        if (helper) {
-          if (typeof helper.getModel === 'function' && helper.getModel()) {
-              topicId = helper.getModel().topic_id || helper.getModel().id;
-          } else if (helper.widget && helper.widget.model) {
-              topicId = helper.widget.model.topic_id || helper.widget.model.id;
-          }
+        if (helper && helper.getModel && helper.getModel()) {
+            topicId = helper.getModel().topic_id || helper.getModel().id;
+        } else if (helper && helper.widget && helper.widget.model) {
+            topicId = helper.widget.model.topic_id || helper.widget.model.id;
         }
         
         if (!topicId) {
@@ -192,27 +132,27 @@ export default apiInitializer("0.11", (api) => {
             if (match) topicId = match[1];
         }
 
+        // 预览模式
         if (!topicId && !document.body.classList.contains("topic-page")) {
           secureElements.forEach(el => {
               el.classList.add("secure-preview");
-              el.setAttribute("data-preview-prefix", R.preview_prefix);
+              el.setAttribute("data-preview-prefix", getLocText("preview_prefix"));
+              el.style.display = "block";
           });
+          // 手动为预览内容召唤护盾
+          if (window.applyExternalLinkShield) window.applyExternalLinkShield(element);
           return; 
         }
 
         let hasReplied = false;
-        let replyCheckPromise = null;
+        let replyCheckPromise = Promise.resolve(false);
         const needsReplyCheck = Array.from(secureElements).some(el => el.dataset.secureType === "reply");
 
-        if (currentUser && topicId && needsReplyCheck) {
+        if (needsReplyCheck && currentUser && topicId) {
            replyCheckPromise = checkUserReplied(currentUser.id, topicId);
-        } else {
-           replyCheckPromise = Promise.resolve(false);
         }
 
-        if (needsReplyCheck && currentUser) {
-           hasReplied = await replyCheckPromise;
-        }
+        hasReplied = await replyCheckPromise;
 
         secureElements.forEach((el) => {
           const type = el.dataset.secureType;
@@ -221,34 +161,30 @@ export default apiInitializer("0.11", (api) => {
           let icon = "lock";
 
           if (type === "login") {
-            if (currentUser) {
-              isLocked = false; 
-            } else {
-              msgHtml = R.mask_login;
-              icon = "lock";
-            }
+            if (currentUser) isLocked = false; 
+            else { msgHtml = getLocText("mask_login"); icon = "lock"; }
           } else if (type === "reply") {
-            if (!currentUser) {
-               msgHtml = R.mask_login_reply;
-               icon = "lock"; 
-            } else if (hasReplied || currentUser.admin || currentUser.moderator) {
-              isLocked = false;
-            } else {
-              msgHtml = R.mask_reply;
-              icon = "reply"; 
-            }
+            if (!currentUser) { msgHtml = getLocText("mask_login_reply"); icon = "lock"; }
+            else if (hasReplied || currentUser.admin || currentUser.moderator || currentUser.id === helper?.getModel()?.user_id) isLocked = false;
+            else { msgHtml = getLocText("mask_reply"); icon = "reply"; }
           }
 
           if (isLocked) {
             renderMask(el, type, icon, msgHtml);
           } else {
-            unlockContent(el);
+            // 已解锁：展示内容并重新召唤外部链接护盾
+            el.classList.remove("secure-wrapper");
+            el.classList.add("secure-unlocked");
+            el.style.display = "block";
+            if (window.applyExternalLinkShield) {
+               window.applyExternalLinkShield(el);
+            }
           }
         });
       } catch (err) {
-        console.error("[Secure Content] Rendering error safely caught:", err);
+        console.error("[Secure Content] Rendering error:", err);
       }
     },
-    { id: "secure-content-decorator" }
+    { id: "secure-content-decorator", onlyStream: true }
   );
 });
