@@ -29,7 +29,7 @@ export default apiInitializer("0.11", (api) => {
     }
   }[lang];
 
-  // 1. 完美修复 i18n 失效：深度注入 Discourse Composer 翻译树
+  // 1. 完美修复 i18n
   if (window.I18n && window.I18n.translations && window.I18n.translations[locale]) {
       let trans = window.I18n.translations[locale];
       trans.js = trans.js || {};
@@ -76,7 +76,6 @@ export default apiInitializer("0.11", (api) => {
   }
 
   function renderMask(el, type, icon, msgHtml) {
-      // 坚持使用 Span，彻底杜绝违规嵌套
       const maskNode = document.createElement("span");
       maskNode.className = `secure-content-mask apple-style type-${type}`;
       maskNode.innerHTML = `
@@ -97,81 +96,96 @@ export default apiInitializer("0.11", (api) => {
       }
       el.innerHTML = ""; 
       el.appendChild(maskNode);
-      el.style.display = "flex"; // 设置为 Flex 让 UI 不崩溃
+      el.style.display = "flex"; 
   }
 
-  // 2. 核心渲染：原生底层解析，绝对免疫第三方排版污染！
+  // 终极杀手锏：利用原生 Range API 切割 DOM，不伤及任何 Ember/Callout 结构！
+  function wrapSecureTags(element, type) {
+      const startTag = `[${type}]`;
+      const endTag = `[/${type}]`;
+      let hasChanges = false;
+      let safety = 100; // 防止异常嵌套死循环
+
+      while (safety-- > 0) {
+          let walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
+          let startNode = null;
+          while (walker.nextNode()) {
+              if (walker.currentNode.nodeValue.toLowerCase().includes(startTag)) {
+                  startNode = walker.currentNode;
+                  break;
+              }
+          }
+          if (!startNode) break; 
+
+          // 切割出纯净的起始标签节点
+          let startIdx = startNode.nodeValue.toLowerCase().indexOf(startTag);
+          let startTagNode = startNode.splitText(startIdx);
+          startTagNode.splitText(startTag.length);
+
+          walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
+          let endNode = null;
+          while (walker.nextNode()) {
+              if (walker.currentNode.nodeValue.toLowerCase().includes(endTag)) {
+                  endNode = walker.currentNode;
+                  break;
+              }
+          }
+
+          if (!endNode) {
+              startTagNode.nodeValue = ""; // 只有头没有尾，抹除防止报错
+              break;
+          }
+
+          // 切割出纯净的结束标签节点
+          let endIdx = endNode.nodeValue.toLowerCase().indexOf(endTag);
+          let endTagNode = endNode.splitText(endIdx);
+          endTagNode.splitText(endTag.length);
+
+          // 清理 Markdown 解析时可能在标签旁生成的无用 <br>，保持排版美观
+          if (startTagNode.nextSibling && startTagNode.nextSibling.nodeName === 'BR') {
+              startTagNode.nextSibling.remove();
+          }
+          if (endTagNode.previousSibling && endTagNode.previousSibling.nodeName === 'BR') {
+              endTagNode.previousSibling.remove();
+          }
+
+          // 创建原生选区打包内容
+          let range = document.createRange();
+          range.setStartAfter(startTagNode);
+          range.setEndBefore(endTagNode);
+
+          let content = range.extractContents();
+          let wrapper = document.createElement('span');
+          wrapper.className = 'secure-wrapper';
+          wrapper.dataset.secureType = type;
+          wrapper.style.display = 'block';
+          wrapper.appendChild(content);
+
+          range.insertNode(wrapper);
+
+          // 销毁首尾标签占位符
+          startTagNode.remove();
+          endTagNode.remove();
+          hasChanges = true;
+      }
+      return hasChanges;
+  }
+
   api.decorateCookedElement(
     async (element, helper) => {
       try {
-        if (/\[(login|reply)\]/i.test(element.textContent)) {
-            // 第一步：文本节点扫描，只替换标签，绝不触碰 DOM 结构！
-            const walkText = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
-            let textNodes = [];
-            while(walkText.nextNode()) textNodes.push(walkText.currentNode);
-            
-            textNodes.forEach(node => {
-                let text = node.nodeValue;
-                if (/\[(login|reply)\]|\[\/(login|reply)\]/i.test(text)) {
-                    let fragment = document.createDocumentFragment();
-                    let parts = text.split(/(\[login\]|\[\/login\]|\[reply\]|\[\/reply\])/i);
-                    parts.forEach(part => {
-                        if (!part) return;
-                        let lowerPart = part.toLowerCase();
-                        if (lowerPart === '[login]') fragment.appendChild(document.createComment(' SECURE_LOGIN_START '));
-                        else if (lowerPart === '[/login]') fragment.appendChild(document.createComment(' SECURE_LOGIN_END '));
-                        else if (lowerPart === '[reply]') fragment.appendChild(document.createComment(' SECURE_REPLY_START '));
-                        else if (lowerPart === '[/reply]') fragment.appendChild(document.createComment(' SECURE_REPLY_END '));
-                        else fragment.appendChild(document.createTextNode(part));
-                    });
-                    node.parentNode.replaceChild(fragment, node);
-                }
-            });
-            
-            // 第二步：利用原生选区 (Range) 精准圈住我们要隐藏的内容，包裹进 span 里
-            ['LOGIN', 'REPLY'].forEach(t => {
-                let comments = [];
-                let walker = document.createTreeWalker(element, NodeFilter.SHOW_COMMENT, null, false);
-                while(walker.nextNode()) comments.push(walker.currentNode);
-                
-                let startNode = null;
-                for (let c of comments) {
-                    if (c.nodeValue === ` SECURE_${t}_START `) {
-                        startNode = c;
-                    } else if (c.nodeValue === ` SECURE_${t}_END ` && startNode) {
-                        let endNode = c;
-                        let range = document.createRange();
-                        range.setStartAfter(startNode);
-                        range.setEndBefore(endNode);
-                        
-                        let contentFragment = range.extractContents();
-                        let spanWrapper = document.createElement('span');
-                        spanWrapper.className = 'secure-wrapper';
-                        spanWrapper.dataset.secureType = t.toLowerCase();
-                        spanWrapper.style.display = 'block';
-                        spanWrapper.appendChild(contentFragment);
-                        
-                        range.insertNode(spanWrapper);
-                        startNode.remove();
-                        endNode.remove();
-                        startNode = null;
-                    }
-                }
-            });
-            
-            // 扫除因剥离产生的空段落
-            element.querySelectorAll('p').forEach(p => {
-                if (p.innerHTML.trim() === '' || p.innerHTML === '<br>') p.remove();
-            });
-            
-            // 呼叫护盾插件给新生成的 DOM 上色
-            if (window.applyExternalLinkShield) {
-                window.applyExternalLinkShield(element);
-            }
-        }
+        let changedLogin = wrapSecureTags(element, 'login');
+        let changedReply = wrapSecureTags(element, 'reply');
 
         const secureElements = element.querySelectorAll(".secure-wrapper");
-        if (!secureElements.length) return;
+        
+        if (!secureElements.length) {
+            // 即使没有隐藏内容，如果有替换操作，也可能暴露出网盘链接，呼叫护盾
+            if ((changedLogin || changedReply) && window.applyExternalLinkShield) {
+                window.applyExternalLinkShield(element);
+            }
+            return;
+        }
 
         let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.id || helper?.widget?.model?.topic_id || helper?.widget?.model?.id;
         if (!topicId) {
@@ -179,6 +193,7 @@ export default apiInitializer("0.11", (api) => {
             if (match) topicId = match[1];
         }
 
+        // 编辑器预览状态
         if (!topicId && !document.body.classList.contains("topic-page")) {
           secureElements.forEach(el => {
               el.classList.add("secure-preview");
@@ -213,9 +228,11 @@ export default apiInitializer("0.11", (api) => {
           if (isLocked) {
             renderMask(el, type, icon, msgHtml);
           } else {
+            // 解锁
             el.classList.remove("secure-wrapper");
             el.classList.add("secure-unlocked");
             el.style.display = "block";
+            // 呼叫隔壁护盾插件，给解锁出来的内容补上云朵/绿锁图标！
             if (window.applyExternalLinkShield) window.applyExternalLinkShield(el);
           }
         });
