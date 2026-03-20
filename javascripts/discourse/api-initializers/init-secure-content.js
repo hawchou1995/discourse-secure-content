@@ -6,13 +6,12 @@ export default apiInitializer("0.11", (api) => {
   const locale = window.I18n ? window.I18n.currentLocale() : "zh_CN";
   const lang = locale.startsWith("zh") ? "zh" : "en";
 
-  // 国际化文案
   const txt = {
     zh: {
       btn_login: "插入登录可见",
       btn_reply: "插入回复可见",
-      txt_login: "此处内容登录后可见",
-      txt_reply: "此处内容回复后可见",
+      txt_login: "此处内容登录后可见...",
+      txt_reply: "此处内容回复后可见...",
       mask_login: `此内容仅供登录用户查看，请 <a href="/login" class="secure-link-btn">登录</a>`,
       mask_reply: `此内容隐藏，请 <a href="#" class="secure-link-btn trigger-reply">回复本帖</a> 后查看`,
       mask_login_reply: `此内容需回复可见，请先 <a href="/login" class="secure-link-btn">登录</a>`,
@@ -21,8 +20,8 @@ export default apiInitializer("0.11", (api) => {
     en: {
       btn_login: "Insert Login Block",
       btn_reply: "Insert Reply Block",
-      txt_login: "Content visible after login",
-      txt_reply: "Content visible after reply",
+      txt_login: "Content visible after login...",
+      txt_reply: "Content visible after reply...",
       mask_login: `Content hidden. Please <a href="/login" class="secure-link-btn">Log In</a> to view.`,
       mask_reply: `Content hidden. Please <a href="#" class="secure-link-btn trigger-reply">Reply</a> to view.`,
       mask_login_reply: `Reply required. Please <a href="/login" class="secure-link-btn">Log In</a> first.`,
@@ -30,31 +29,31 @@ export default apiInitializer("0.11", (api) => {
     }
   }[lang];
 
-  // 1. 完美修复 i18n 失效：直接把文案强制注射进 Discourse 的翻译库
-  const loginBtnKey = themePrefix("insert_login");
-  const replyBtnKey = themePrefix("insert_reply");
+  // 1. 完美修复 i18n 失效：深度注入 Discourse Composer 翻译树
   if (window.I18n && window.I18n.translations && window.I18n.translations[locale]) {
-     let js = window.I18n.translations[locale].js || {};
-     js[loginBtnKey] = txt.btn_login;
-     js[replyBtnKey] = txt.btn_reply;
-     window.I18n.translations[locale].js = js;
+      let trans = window.I18n.translations[locale];
+      trans.js = trans.js || {};
+      trans.js.secure_login_btn = txt.btn_login;
+      trans.js.secure_reply_btn = txt.btn_reply;
+      trans.js.composer = trans.js.composer || {};
+      trans.js.composer.secure_login_text = txt.txt_login;
+      trans.js.composer.secure_reply_text = txt.txt_reply;
   }
 
-  // 注册按钮（绝对不会消失，且多语言悬浮提示正常）
   api.onToolbarCreate((toolbar) => {
     toolbar.addButton({
       id: "insert_login_tag",
-      group: "insertions", // 修复了上次写错的组名
+      group: "insertions",
       icon: "lock",
-      title: loginBtnKey,
-      perform: (e) => e.applySurround("\n[login]\n", "\n[/login]\n", txt.txt_login)
+      title: "secure_login_btn",
+      perform: (e) => e.applySurround("\n[login]\n", "\n[/login]\n", "secure_login_text")
     });
     toolbar.addButton({
       id: "insert_reply_tag",
       group: "insertions",
       icon: "comment",
-      title: replyBtnKey,
-      perform: (e) => e.applySurround("\n[reply]\n", "\n[/reply]\n", txt.txt_reply)
+      title: "secure_reply_btn",
+      perform: (e) => e.applySurround("\n[reply]\n", "\n[/reply]\n", "secure_reply_text")
     });
   });
 
@@ -77,13 +76,14 @@ export default apiInitializer("0.11", (api) => {
   }
 
   function renderMask(el, type, icon, msgHtml) {
-      const maskNode = document.createElement("div");
+      // 坚持使用 Span，彻底杜绝违规嵌套
+      const maskNode = document.createElement("span");
       maskNode.className = `secure-content-mask apple-style type-${type}`;
       maskNode.innerHTML = `
-          <div class="secure-icon-container">
+          <span class="secure-icon-container">
             <svg class="fa d-icon d-icon-${icon} svg-icon"><use href="#${icon}"></use></svg>
-          </div>
-          <div class="secure-text">${msgHtml}</div>
+          </span>
+          <span class="secure-text">${msgHtml}</span>
        `;
 
       const replyTrigger = maskNode.querySelector(".trigger-reply");
@@ -97,38 +97,81 @@ export default apiInitializer("0.11", (api) => {
       }
       el.innerHTML = ""; 
       el.appendChild(maskNode);
-      el.style.display = "block";
+      el.style.display = "flex"; // 设置为 Flex 让 UI 不崩溃
   }
 
+  // 2. 核心渲染：原生底层解析，绝对免疫第三方排版污染！
   api.decorateCookedElement(
     async (element, helper) => {
       try {
-        let html = element.innerHTML;
-        let hasChanged = false;
-
-        if (/\[login\]|\[reply\]/i.test(html)) {
-          // 2. 降维打击修复裸露BUG：强行打破 P 标签，确保 div 永远是最高级块元素
-          html = html.replace(/\[login\]/gi, '</p><div class="secure-wrapper" data-secure-type="login"><p>')
-                     .replace(/\[\/login\]/gi, '</p></div><p>')
-                     .replace(/\[reply\]/gi, '</p><div class="secure-wrapper" data-secure-type="reply"><p>')
-                     .replace(/\[\/reply\]/gi, '</p></div><p>');
-          
-          // 清除因为暴力打破而产生的空 P 标签和空 br
-          html = html.replace(/<p>(\s|<br\s*\/?>)*<\/p>/gi, '');
-          
-          element.innerHTML = html;
-          hasChanged = true;
+        if (/\[(login|reply)\]/i.test(element.textContent)) {
+            // 第一步：文本节点扫描，只替换标签，绝不触碰 DOM 结构！
+            const walkText = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
+            let textNodes = [];
+            while(walkText.nextNode()) textNodes.push(walkText.currentNode);
+            
+            textNodes.forEach(node => {
+                let text = node.nodeValue;
+                if (/\[(login|reply)\]|\[\/(login|reply)\]/i.test(text)) {
+                    let fragment = document.createDocumentFragment();
+                    let parts = text.split(/(\[login\]|\[\/login\]|\[reply\]|\[\/reply\])/i);
+                    parts.forEach(part => {
+                        if (!part) return;
+                        let lowerPart = part.toLowerCase();
+                        if (lowerPart === '[login]') fragment.appendChild(document.createComment(' SECURE_LOGIN_START '));
+                        else if (lowerPart === '[/login]') fragment.appendChild(document.createComment(' SECURE_LOGIN_END '));
+                        else if (lowerPart === '[reply]') fragment.appendChild(document.createComment(' SECURE_REPLY_START '));
+                        else if (lowerPart === '[/reply]') fragment.appendChild(document.createComment(' SECURE_REPLY_END '));
+                        else fragment.appendChild(document.createTextNode(part));
+                    });
+                    node.parentNode.replaceChild(fragment, node);
+                }
+            });
+            
+            // 第二步：利用原生选区 (Range) 精准圈住我们要隐藏的内容，包裹进 span 里
+            ['LOGIN', 'REPLY'].forEach(t => {
+                let comments = [];
+                let walker = document.createTreeWalker(element, NodeFilter.SHOW_COMMENT, null, false);
+                while(walker.nextNode()) comments.push(walker.currentNode);
+                
+                let startNode = null;
+                for (let c of comments) {
+                    if (c.nodeValue === ` SECURE_${t}_START `) {
+                        startNode = c;
+                    } else if (c.nodeValue === ` SECURE_${t}_END ` && startNode) {
+                        let endNode = c;
+                        let range = document.createRange();
+                        range.setStartAfter(startNode);
+                        range.setEndBefore(endNode);
+                        
+                        let contentFragment = range.extractContents();
+                        let spanWrapper = document.createElement('span');
+                        spanWrapper.className = 'secure-wrapper';
+                        spanWrapper.dataset.secureType = t.toLowerCase();
+                        spanWrapper.style.display = 'block';
+                        spanWrapper.appendChild(contentFragment);
+                        
+                        range.insertNode(spanWrapper);
+                        startNode.remove();
+                        endNode.remove();
+                        startNode = null;
+                    }
+                }
+            });
+            
+            // 扫除因剥离产生的空段落
+            element.querySelectorAll('p').forEach(p => {
+                if (p.innerHTML.trim() === '' || p.innerHTML === '<br>') p.remove();
+            });
+            
+            // 呼叫护盾插件给新生成的 DOM 上色
+            if (window.applyExternalLinkShield) {
+                window.applyExternalLinkShield(element);
+            }
         }
 
         const secureElements = element.querySelectorAll(".secure-wrapper");
-        
-        // 如果没有隐藏块，但是有替换发生，说明内容需要护盾接管
-        if (!secureElements.length) {
-            if (hasChanged && window.applyExternalLinkShield) {
-                window.applyExternalLinkShield(element);
-            }
-            return;
-        }
+        if (!secureElements.length) return;
 
         let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.id || helper?.widget?.model?.topic_id || helper?.widget?.model?.id;
         if (!topicId) {
@@ -136,7 +179,6 @@ export default apiInitializer("0.11", (api) => {
             if (match) topicId = match[1];
         }
 
-        // 预览框生效处理
         if (!topicId && !document.body.classList.contains("topic-page")) {
           secureElements.forEach(el => {
               el.classList.add("secure-preview");
@@ -171,11 +213,9 @@ export default apiInitializer("0.11", (api) => {
           if (isLocked) {
             renderMask(el, type, icon, msgHtml);
           } else {
-            // 解锁
             el.classList.remove("secure-wrapper");
             el.classList.add("secure-unlocked");
             el.style.display = "block";
-            // 呼叫护盾插件给内容补上图标
             if (window.applyExternalLinkShield) window.applyExternalLinkShield(el);
           }
         });
