@@ -97,15 +97,13 @@ export default apiInitializer("0.11", (api) => {
       }
 
       if (hasChanged) {
-        html = html.replace(/\s*data-security-level="[^"]*"/gi, "");
-        html = html.replace(/\s*data-has-shield-listener="[^"]*"/gi, "");
+        // 🚨 删除了之前那个错误的剥离正则！我们要保留 data-security-level 属性，这样图标才不会消失！
         element.innerHTML = html;
       }
 
       const secureElements = element.querySelectorAll(".secure-wrapper");
       if (!secureElements.length) return;
       
-      // 核心修复：移除可选链操作符 (?.) 防止 SyntaxError 崩溃
       const topicId = (helper && helper.getModel()) ? helper.getModel().topic_id : null;
 
       if (!topicId && !document.body.classList.contains("topic-page")) {
