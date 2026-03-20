@@ -28,17 +28,18 @@ export default apiInitializer("0.11", (api) => {
     }
   }[lang];
 
+  // 1. 修复：使用正确的组名 "insertions"，按钮完美回归
   api.onToolbarCreate((toolbar) => {
     toolbar.addButton({
       id: "insert_login_tag",
-      group: "insertations",
+      group: "insertions",
       icon: "lock",
       title: txt.btn_login,
       perform: (e) => e.applySurround("\n[login]\n", "\n[/login]\n", txt.txt_login)
     });
     toolbar.addButton({
       id: "insert_reply_tag",
-      group: "insertations",
+      group: "insertions",
       icon: "comment",
       title: txt.btn_reply,
       perform: (e) => e.applySurround("\n[reply]\n", "\n[/reply]\n", txt.txt_reply)
@@ -64,16 +65,18 @@ export default apiInitializer("0.11", (api) => {
   }
 
   function renderMask(el, type, icon, msgHtml) {
-      const maskDiv = document.createElement("div");
-      maskDiv.className = `secure-content-mask apple-style type-${type}`;
-      maskDiv.innerHTML = `
-          <div class="secure-icon-container">
+      // 使用 span 替代 div，防止破坏 HTML 结构
+      const maskNode = document.createElement("span");
+      maskNode.className = `secure-content-mask apple-style type-${type}`;
+      maskNode.style.display = "flex";
+      maskNode.innerHTML = `
+          <span class="secure-icon-container">
             <svg class="fa d-icon d-icon-${icon} svg-icon"><use href="#${icon}"></use></svg>
-          </div>
-          <div class="secure-text">${msgHtml}</div>
+          </span>
+          <span class="secure-text">${msgHtml}</span>
        `;
 
-      const replyTrigger = maskDiv.querySelector(".trigger-reply");
+      const replyTrigger = maskNode.querySelector(".trigger-reply");
       if (replyTrigger) {
         replyTrigger.addEventListener("click", (e) => {
             e.preventDefault();
@@ -83,7 +86,7 @@ export default apiInitializer("0.11", (api) => {
         });
       }
       el.innerHTML = ""; 
-      el.appendChild(maskDiv);
+      el.appendChild(maskNode);
       el.style.display = "block";
   }
 
@@ -94,14 +97,16 @@ export default apiInitializer("0.11", (api) => {
         let hasChanged = false;
 
         if (/\[login\]|\[reply\]/i.test(html)) {
-          // 极度剥离：不管外围是 P 还是 br，全部替换干净
-          html = html.replace(/(?:<p>)?\s*\[login\]\s*(?:<br\s*\/?>)?/gi, '[login]')
-                     .replace(/(?:<br\s*\/?>)?\s*\[\/login\]\s*(?:<\/p>)?/gi, '[/login]')
-                     .replace(/(?:<p>)?\s*\[reply\]\s*(?:<br\s*\/?>)?/gi, '[reply]')
-                     .replace(/(?:<br\s*\/?>)?\s*\[\/reply\]\s*(?:<\/p>)?/gi, '[/reply]');
+          // 仅清理多余的换行符，绝不触碰外层的 <p> 标签
+          html = html.replace(/(?:<br\s*\/?>)?\s*\[login\]\s*(?:<br\s*\/?>)?/gi, '[login]')
+                     .replace(/(?:<br\s*\/?>)?\s*\[\/login\]\s*(?:<br\s*\/?>)?/gi, '[/login]')
+                     .replace(/(?:<br\s*\/?>)?\s*\[reply\]\s*(?:<br\s*\/?>)?/gi, '[reply]')
+                     .replace(/(?:<br\s*\/?>)?\s*\[\/reply\]\s*(?:<br\s*\/?>)?/gi, '[/reply]');
 
-          html = html.replace(/\[login\]([\s\S]*?)\[\/login\]/gim, '<div class="secure-wrapper" data-secure-type="login">$1</div>')
-                     .replace(/\[reply\]([\s\S]*?)\[\/reply\]/gim, '<div class="secure-wrapper" data-secure-type="reply">$1</div>');
+          // 2. 修复：把外壳换成 <span>，彻底避免被 Callout 内部破坏！
+          html = html.replace(/\[login\]([\s\S]*?)\[\/login\]/gim, '<span class="secure-wrapper" data-secure-type="login" style="display:block;">$1</span>')
+                     .replace(/\[reply\]([\s\S]*?)\[\/reply\]/gim, '<span class="secure-wrapper" data-secure-type="reply" style="display:block;">$1</span>');
+          
           element.innerHTML = html;
           hasChanged = true;
         }
