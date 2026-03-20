@@ -97,7 +97,7 @@ export default apiInitializer("0.11", (api) => {
       if (result.details && result.details.user_data && typeof result.details.user_data.posted === 'boolean') {
           hasPost = result.details.user_data.posted;
       } else {
-          hasPost = result.details?.participants?.some(p => p.id === userId);
+          hasPost = result.details && result.details.participants && result.details.participants.some(p => p.id === userId);
       }
       replyStatusCache.set(key, !!hasPost);
       return !!hasPost;
@@ -144,11 +144,13 @@ export default apiInitializer("0.11", (api) => {
       el.classList.remove("secure-wrapper");
       el.classList.add("secure-unlocked");
       el.style.display = "block";
+      
+      // ⚠️ 关键代码：通知外部链接护盾，来接管这里面被刷掉的链接！
+      document.dispatchEvent(new CustomEvent("secureContentUnlocked", { detail: { element: el } }));
   }
 
   api.decorateCookedElement(
     async (element, helper) => {
-      // ✅ 为整个函数加上强力的 Try-Catch，避免底层环境导致的崩溃扩散！
       try {
         let html = element.innerHTML;
         let hasChanged = false;
@@ -176,7 +178,6 @@ export default apiInitializer("0.11", (api) => {
         const secureElements = element.querySelectorAll(".secure-wrapper");
         if (!secureElements.length) return;
         
-        // ✅ 采用最传统、最安全的判断，彻底抛弃会引发环境崩溃的 '?.' 语法
         let topicId = null;
         if (helper) {
           if (typeof helper.getModel === 'function' && helper.getModel()) {
