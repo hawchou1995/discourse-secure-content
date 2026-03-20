@@ -29,7 +29,6 @@ export default apiInitializer("0.11", (api) => {
     }
   }[lang];
 
-  // 1. 完美修复 i18n
   if (window.I18n && window.I18n.translations && window.I18n.translations[locale]) {
       let trans = window.I18n.translations[locale];
       trans.js = trans.js || {};
@@ -99,89 +98,31 @@ export default apiInitializer("0.11", (api) => {
       el.style.display = "flex"; 
   }
 
-  // 终极杀手锏：利用原生 Range API 切割 DOM，不伤及任何 Ember/Callout 结构！
-  function wrapSecureTags(element, type) {
-      const startTag = `[${type}]`;
-      const endTag = `[/${type}]`;
-      let hasChanges = false;
-      let safety = 100; // 防止异常嵌套死循环
-
-      while (safety-- > 0) {
-          let walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
-          let startNode = null;
-          while (walker.nextNode()) {
-              if (walker.currentNode.nodeValue.toLowerCase().includes(startTag)) {
-                  startNode = walker.currentNode;
-                  break;
-              }
-          }
-          if (!startNode) break; 
-
-          // 切割出纯净的起始标签节点
-          let startIdx = startNode.nodeValue.toLowerCase().indexOf(startTag);
-          let startTagNode = startNode.splitText(startIdx);
-          startTagNode.splitText(startTag.length);
-
-          walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
-          let endNode = null;
-          while (walker.nextNode()) {
-              if (walker.currentNode.nodeValue.toLowerCase().includes(endTag)) {
-                  endNode = walker.currentNode;
-                  break;
-              }
-          }
-
-          if (!endNode) {
-              startTagNode.nodeValue = ""; // 只有头没有尾，抹除防止报错
-              break;
-          }
-
-          // 切割出纯净的结束标签节点
-          let endIdx = endNode.nodeValue.toLowerCase().indexOf(endTag);
-          let endTagNode = endNode.splitText(endIdx);
-          endTagNode.splitText(endTag.length);
-
-          // 清理 Markdown 解析时可能在标签旁生成的无用 <br>，保持排版美观
-          if (startTagNode.nextSibling && startTagNode.nextSibling.nodeName === 'BR') {
-              startTagNode.nextSibling.remove();
-          }
-          if (endTagNode.previousSibling && endTagNode.previousSibling.nodeName === 'BR') {
-              endTagNode.previousSibling.remove();
-          }
-
-          // 创建原生选区打包内容
-          let range = document.createRange();
-          range.setStartAfter(startTagNode);
-          range.setEndBefore(endTagNode);
-
-          let content = range.extractContents();
-          let wrapper = document.createElement('span');
-          wrapper.className = 'secure-wrapper';
-          wrapper.dataset.secureType = type;
-          wrapper.style.display = 'block';
-          wrapper.appendChild(content);
-
-          range.insertNode(wrapper);
-
-          // 销毁首尾标签占位符
-          startTagNode.remove();
-          endTagNode.remove();
-          hasChanges = true;
-      }
-      return hasChanges;
-  }
-
   api.decorateCookedElement(
     async (element, helper) => {
       try {
-        let changedLogin = wrapSecureTags(element, 'login');
-        let changedReply = wrapSecureTags(element, 'reply');
+        let html = element.innerHTML;
+        let hasChanged = false;
+
+        if (/\[login\]|\[reply\]/i.test(html)) {
+          // 清除无用换行
+          html = html.replace(/(<br\s*\/?>)?\s*\[login\]\s*(<br\s*\/?>)?/gi, '[login]')
+                     .replace(/(<br\s*\/?>)?\s*\[\/login\]\s*(<br\s*\/?>)?/gi, '[/login]')
+                     .replace(/(<br\s*\/?>)?\s*\[reply\]\s*(<br\s*\/?>)?/gi, '[reply]')
+                     .replace(/(<br\s*\/?>)?\s*\[\/reply\]\s*(<br\s*\/?>)?/gi, '[/reply]');
+
+          // 核心：使用 span 包裹，完美兼容 Markdown 和 Callout 生成的 <p>
+          html = html.replace(/\[login\]([\s\S]*?)\[\/login\]/gim, '<span class="secure-wrapper" data-secure-type="login" style="display:block;width:100%;">$1</span>')
+                     .replace(/\[reply\]([\s\S]*?)\[\/reply\]/gim, '<span class="secure-wrapper" data-secure-type="reply" style="display:block;width:100%;">$1</span>');
+
+          element.innerHTML = html;
+          hasChanged = true;
+        }
 
         const secureElements = element.querySelectorAll(".secure-wrapper");
         
         if (!secureElements.length) {
-            // 即使没有隐藏内容，如果有替换操作，也可能暴露出网盘链接，呼叫护盾
-            if ((changedLogin || changedReply) && window.applyExternalLinkShield) {
+            if (hasChanged && window.applyExternalLinkShield) {
                 window.applyExternalLinkShield(element);
             }
             return;
@@ -193,7 +134,6 @@ export default apiInitializer("0.11", (api) => {
             if (match) topicId = match[1];
         }
 
-        // 编辑器预览状态
         if (!topicId && !document.body.classList.contains("topic-page")) {
           secureElements.forEach(el => {
               el.classList.add("secure-preview");
@@ -228,11 +168,9 @@ export default apiInitializer("0.11", (api) => {
           if (isLocked) {
             renderMask(el, type, icon, msgHtml);
           } else {
-            // 解锁
             el.classList.remove("secure-wrapper");
             el.classList.add("secure-unlocked");
             el.style.display = "block";
-            // 呼叫隔壁护盾插件，给解锁出来的内容补上云朵/绿锁图标！
             if (window.applyExternalLinkShield) window.applyExternalLinkShield(el);
           }
         });
