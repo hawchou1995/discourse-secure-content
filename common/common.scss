@@ -1,41 +1,58 @@
 .secure-wrapper { display: none; }
-.secure-unlocked { animation: fade-in 0.3s ease-out; display: block; width: 100%; box-sizing: border-box; }
+.secure-unlocked { 
+  animation: fade-in 0.3s ease-out; 
+  display: block; 
+  width: 100%; 
+  box-sizing: border-box; 
+  margin: 0; 
+  padding: 0;
+}
 
 @keyframes fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
 }
 
+/* =========================================
+   专属编辑器预览区的样式（高亮显示，以作区分）
+   ========================================= */
 .secure-wrapper.secure-preview {
   display: block !important;
-  border: 1px dashed var(--primary-low-mid);
-  padding: 10px 14px;
-  margin: 1em 0;
-  opacity: 0.7;
-  font-size: 0.95em;
-  background: var(--secondary-very-high);
-  border-radius: 4px;
-  color: var(--primary-medium);
+  border: 2px dashed var(--tertiary);
+  padding: 14px 16px;
+  margin: 0.5em 0;
+  background: rgba(var(--tertiary-rgb), 0.05);
+  border-radius: 8px;
+  color: var(--primary);
   width: 100%;
   box-sizing: border-box;
+  position: relative;
   
   &::before {
     content: attr(data-preview-prefix);
-    display: block;
-    font-weight: bold;
-    margin-bottom: 6px;
-    color: var(--primary);
-    opacity: 0.9;
+    display: inline-block;
+    font-weight: 700;
+    margin-bottom: 10px;
+    color: var(--tertiary);
+    font-size: 0.85em;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    background: var(--tertiary-low);
+    padding: 3px 8px;
+    border-radius: 4px;
   }
 }
 
+/* =========================================
+   实际帖子的遮罩样式（去除了边距，防止空行）
+   ========================================= */
 .secure-content-mask.apple-style {
   display: flex;
   flex-direction: row; 
   align-items: center;
   justify-content: flex-start;
   gap: 12px;
-  margin: 0.5em 0; 
+  margin: 0; /* 强力消除隐藏块首尾自带的多余白距 */
   padding: 12px 16px;
   border-radius: 10px;
   background: rgba(var(--primary-rgb), 0.03); 
@@ -65,6 +82,7 @@
   .secure-text {
     flex: 1;
     font-weight: 500;
+    margin: 0; /* 取消内部 P 标签导致的高度差 */
     
     a.secure-link-btn {
       color: var(--tertiary); 
