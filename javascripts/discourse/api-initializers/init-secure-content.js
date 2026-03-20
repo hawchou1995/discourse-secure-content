@@ -75,93 +75,36 @@ export default apiInitializer("0.11", (api) => {
     });
   });
 
-  api.decorateCookedElement(
-    async (element, helper) => {
-      let html = element.innerHTML;
-      let hasChanged = false;
+  const replyStatusCache = new Map();
+  
+  async function checkUserReplied(userId, topicId) {
+    const key = `${userId}:${topicId}`;
+    if (replyStatusCache.has(key)) return replyStatusCache.get(key);
+    
+    if (currentUser && currentUser.post_count === 0) {
+        replyStatusCache.set(key, false);
+        return false;
+    }
 
-      if (/\[login\]/i.test(html)) {
-        html = html.replace(
-           /\[login\]([\s\S]*?)\[\/login\]/gim, 
-           (m, p1) => `<div class="secure-wrapper" data-secure-type="login">${cleanInnerHtml(p1)}</div>`
-        );
-        hasChanged = true;
-      }
+    if (document.querySelector(`article[data-user-id="${userId}"]`)) {
+        replyStatusCache.set(key, true);
+        return true;
+    }
 
-      if (/\[reply\]/i.test(html)) {
-        html = html.replace(
-           /\[reply\]([\s\S]*?)\[\/reply\]/gim, 
-           (m, p1) => `<div class="secure-wrapper" data-secure-type="reply">${cleanInnerHtml(p1)}</div>`
-        );
-        hasChanged = true;
-      }
-
-      if (hasChanged) {
-        // 🚨 删除了之前那个错误的剥离正则！我们要保留 data-security-level 属性，这样图标才不会消失！
-        element.innerHTML = html;
-      }
-
-      const secureElements = element.querySelectorAll(".secure-wrapper");
-      if (!secureElements.length) return;
-      
-      const topicId = (helper && helper.getModel()) ? helper.getModel().topic_id : null;
-
-      if (!topicId && !document.body.classList.contains("topic-page")) {
-        secureElements.forEach(el => {
-            el.classList.add("secure-preview");
-            el.setAttribute("data-preview-prefix", R.preview_prefix);
-        });
-        return; 
-      }
-
-      let hasReplied = false;
-      let replyCheckPromise = null;
-      const needsReplyCheck = Array.from(secureElements).some(el => el.dataset.secureType === "reply");
-
-      if (currentUser && topicId && needsReplyCheck) {
-         replyCheckPromise = checkUserReplied(currentUser.id, topicId);
+    try {
+      const result = await ajax(`/t/${topicId}.json`);
+      let hasPost = false;
+      if (result.details && result.details.user_data && typeof result.details.user_data.posted === 'boolean') {
+          hasPost = result.details.user_data.posted;
       } else {
-         replyCheckPromise = Promise.resolve(false);
+          hasPost = result.details?.participants?.some(p => p.id === userId);
       }
-
-      if (needsReplyCheck && currentUser) {
-         hasReplied = await replyCheckPromise;
-      }
-
-      secureElements.forEach((el) => {
-        const type = el.dataset.secureType;
-        let isLocked = true;
-        let msgHtml = "";
-        let icon = "lock";
-
-        if (type === "login") {
-          if (currentUser) {
-            isLocked = false; 
-          } else {
-            msgHtml = R.mask_login;
-            icon = "lock";
-          }
-        } else if (type === "reply") {
-          if (!currentUser) {
-             msgHtml = R.mask_login_reply;
-             icon = "lock"; 
-          } else if (hasReplied || currentUser.admin || currentUser.moderator) {
-            isLocked = false;
-          } else {
-            msgHtml = R.mask_reply;
-            icon = "reply"; 
-          }
-        }
-
-        if (isLocked) {
-          renderMask(el, type, icon, msgHtml);
-        } else {
-          unlockContent(el);
-        }
-      });
-    },
-    { id: "secure-content-decorator" }
-  );
+      replyStatusCache.set(key, !!hasPost);
+      return !!hasPost;
+    } catch (e) {
+      return false;
+    }
+  }
 
   function renderMask(el, type, icon, msgHtml) {
       const maskDiv = document.createElement("div");
@@ -203,35 +146,108 @@ export default apiInitializer("0.11", (api) => {
       el.style.display = "block";
   }
 
-  const replyStatusCache = new Map();
-  
-  async function checkUserReplied(userId, topicId) {
-    const key = `${userId}:${topicId}`;
-    if (replyStatusCache.has(key)) return replyStatusCache.get(key);
-    
-    const user = api.getCurrentUser();
-    if (user && user.post_count === 0) {
-        replyStatusCache.set(key, false);
-        return false;
-    }
+  api.decorateCookedElement(
+    async (element, helper) => {
+      // ✅ 为整个函数加上强力的 Try-Catch，避免底层环境导致的崩溃扩散！
+      try {
+        let html = element.innerHTML;
+        let hasChanged = false;
 
-    if (document.querySelector(`article[data-user-id="${userId}"]`)) {
-        replyStatusCache.set(key, true);
-        return true;
-    }
+        if (/\[login\]/i.test(html)) {
+          html = html.replace(
+             /\[login\]([\s\S]*?)\[\/login\]/gim, 
+             (m, p1) => `<div class="secure-wrapper" data-secure-type="login">${cleanInnerHtml(p1)}</div>`
+          );
+          hasChanged = true;
+        }
 
-    try {
-      const result = await ajax(`/t/${topicId}.json`);
-      let hasPost = false;
-      if (result.details && result.details.user_data && typeof result.details.user_data.posted === 'boolean') {
-          hasPost = result.details.user_data.posted;
-      } else {
-          hasPost = result.details?.participants?.some(p => p.id === userId);
+        if (/\[reply\]/i.test(html)) {
+          html = html.replace(
+             /\[reply\]([\s\S]*?)\[\/reply\]/gim, 
+             (m, p1) => `<div class="secure-wrapper" data-secure-type="reply">${cleanInnerHtml(p1)}</div>`
+          );
+          hasChanged = true;
+        }
+
+        if (hasChanged) {
+          element.innerHTML = html;
+        }
+
+        const secureElements = element.querySelectorAll(".secure-wrapper");
+        if (!secureElements.length) return;
+        
+        // ✅ 采用最传统、最安全的判断，彻底抛弃会引发环境崩溃的 '?.' 语法
+        let topicId = null;
+        if (helper) {
+          if (typeof helper.getModel === 'function' && helper.getModel()) {
+              topicId = helper.getModel().topic_id || helper.getModel().id;
+          } else if (helper.widget && helper.widget.model) {
+              topicId = helper.widget.model.topic_id || helper.widget.model.id;
+          }
+        }
+        
+        if (!topicId) {
+            const match = window.location.pathname.match(/\/t\/[^\/]+\/(\d+)/);
+            if (match) topicId = match[1];
+        }
+
+        if (!topicId && !document.body.classList.contains("topic-page")) {
+          secureElements.forEach(el => {
+              el.classList.add("secure-preview");
+              el.setAttribute("data-preview-prefix", R.preview_prefix);
+          });
+          return; 
+        }
+
+        let hasReplied = false;
+        let replyCheckPromise = null;
+        const needsReplyCheck = Array.from(secureElements).some(el => el.dataset.secureType === "reply");
+
+        if (currentUser && topicId && needsReplyCheck) {
+           replyCheckPromise = checkUserReplied(currentUser.id, topicId);
+        } else {
+           replyCheckPromise = Promise.resolve(false);
+        }
+
+        if (needsReplyCheck && currentUser) {
+           hasReplied = await replyCheckPromise;
+        }
+
+        secureElements.forEach((el) => {
+          const type = el.dataset.secureType;
+          let isLocked = true;
+          let msgHtml = "";
+          let icon = "lock";
+
+          if (type === "login") {
+            if (currentUser) {
+              isLocked = false; 
+            } else {
+              msgHtml = R.mask_login;
+              icon = "lock";
+            }
+          } else if (type === "reply") {
+            if (!currentUser) {
+               msgHtml = R.mask_login_reply;
+               icon = "lock"; 
+            } else if (hasReplied || currentUser.admin || currentUser.moderator) {
+              isLocked = false;
+            } else {
+              msgHtml = R.mask_reply;
+              icon = "reply"; 
+            }
+          }
+
+          if (isLocked) {
+            renderMask(el, type, icon, msgHtml);
+          } else {
+            unlockContent(el);
+          }
+        });
+      } catch (err) {
+        console.error("[Secure Content] Rendering error safely caught:", err);
       }
-      replyStatusCache.set(key, !!hasPost);
-      return !!hasPost;
-    } catch (e) {
-      return false;
-    }
-  }
+    },
+    { id: "secure-content-decorator" }
+  );
 });
