@@ -88,7 +88,7 @@ export default apiInitializer("0.11", (api) => {
     });
   });
 
-  // =========================================================
+// =========================================================
   // 5. 核心渲染逻辑
   // =========================================================
   api.decorateCookedElement(
@@ -112,10 +112,20 @@ export default apiInitializer("0.11", (api) => {
         hasChanged = true;
       }
 
-      if (hasChanged) element.innerHTML = html;
+      if (hasChanged) {
+        // 【关键修复】：在暴力重写 DOM 之前，强行剥离“外部链接护盾”留下的标记！
+        // 这样在 DOM 重建后，护盾插件的 MutationObserver 就会将其视为新链接，重新绑定点击弹窗事件！
+        html = html.replace(/\s*data-security-level="[^"]*"/gi, "");
+        html = html.replace(/\s*data-has-shield-listener="[^"]*"/gi, "");
+        
+        element.innerHTML = html;
+      }
 
       const secureElements = element.querySelectorAll(".secure-wrapper");
       if (!secureElements.length) return;
+      
+      // ... 下面的代码保持不变 ...
+      const topicId = helper ? helper.getModel()?.topic_id : null;
 
       const topicId = helper ? helper.getModel()?.topic_id : null;
 
