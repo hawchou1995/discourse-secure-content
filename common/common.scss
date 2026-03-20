@@ -1,5 +1,5 @@
 .secure-wrapper { display: none; }
-.secure-unlocked { animation: fade-in 0.3s ease-out; display: block; width: 100%; }
+.secure-unlocked { animation: fade-in 0.3s ease-out; display: block; width: 100%; box-sizing: border-box; }
 
 @keyframes fade-in {
   from { opacity: 0; }
