@@ -97,13 +97,16 @@ export default apiInitializer("0.11", (api) => {
       }
 
       if (hasChanged) {
+        html = html.replace(/\s*data-security-level="[^"]*"/gi, "");
+        html = html.replace(/\s*data-has-shield-listener="[^"]*"/gi, "");
         element.innerHTML = html;
       }
 
       const secureElements = element.querySelectorAll(".secure-wrapper");
       if (!secureElements.length) return;
       
-      const topicId = helper ? helper.getModel()?.topic_id : null;
+      // 核心修复：移除可选链操作符 (?.) 防止 SyntaxError 崩溃
+      const topicId = (helper && helper.getModel()) ? helper.getModel().topic_id : null;
 
       if (!topicId && !document.body.classList.contains("topic-page")) {
         secureElements.forEach(el => {
