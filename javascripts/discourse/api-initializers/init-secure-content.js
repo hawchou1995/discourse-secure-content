@@ -15,7 +15,7 @@ export default apiInitializer("0.11", (api) => {
       mask_login: `此内容仅供登录用户查看，请 <a href="/login" class="secure-link-btn">登录</a>`,
       mask_reply: `此内容隐藏，请 <a href="#" class="secure-link-btn trigger-reply">回复本帖</a> 后查看`,
       mask_login_reply: `此内容需回复可见，请先 <a href="/login" class="secure-link-btn">登录</a>`,
-      preview: "🔒 隐藏内容预览"
+      preview: "🔒 隐藏内容预览（正式发布后根据权限显示）"
     },
     en: {
       btn_login: "Insert Login Block",
@@ -95,7 +95,6 @@ export default apiInitializer("0.11", (api) => {
       }
       el.innerHTML = ""; 
       el.appendChild(maskNode);
-      el.style.display = "flex"; 
   }
 
   function wrapSecureTags(element, type) {
@@ -137,12 +136,20 @@ export default apiInitializer("0.11", (api) => {
           let endTagNode = endNode.splitText(endIdx);
           endTagNode.splitText(endTag.length);
 
-          // 封装内容
           let range = document.createRange();
           range.setStartAfter(startTagNode);
           range.setEndBefore(endTagNode);
 
           let content = range.extractContents();
+          
+          // 【强力除杂】去除被提取内容头部和尾部的空行/换行
+          while (content.firstChild && (content.firstChild.nodeName === 'BR' || (content.firstChild.nodeType === Node.TEXT_NODE && content.firstChild.nodeValue.trim() === ''))) {
+              content.firstChild.remove();
+          }
+          while (content.lastChild && (content.lastChild.nodeName === 'BR' || (content.lastChild.nodeType === Node.TEXT_NODE && content.lastChild.nodeValue.trim() === ''))) {
+              content.lastChild.remove();
+          }
+
           let wrapper = document.createElement('div');
           wrapper.className = 'secure-wrapper';
           wrapper.dataset.secureType = type;
@@ -150,24 +157,11 @@ export default apiInitializer("0.11", (api) => {
 
           range.insertNode(wrapper);
 
-          // 【强力消除多余空行】：扫描并删除被 Discourse 添加在块首尾的换行符
-          let prevWalk = wrapper.previousSibling;
-          while(prevWalk && (prevWalk.nodeName === 'BR' || (prevWalk.nodeType === Node.TEXT_NODE && prevWalk.nodeValue.trim() === ''))) {
-              let tmp = prevWalk.previousSibling;
-              prevWalk.remove();
-              prevWalk = tmp;
-          }
-          let nextWalk = wrapper.nextSibling;
-          while(nextWalk && (nextWalk.nodeName === 'BR' || (nextWalk.nodeType === Node.TEXT_NODE && nextWalk.nodeValue.trim() === ''))) {
-              let tmp = nextWalk.nextSibling;
-              nextWalk.remove();
-              nextWalk = tmp;
-          }
-
+          // 销毁首尾标签占位符
           startTagNode.remove();
           endTagNode.remove();
 
-          // 【强力消除空段落】：删除没有任何实质内容的遗留 P 标签
+          // 顺手删掉被抽空的外层 P 标签
           element.querySelectorAll('p').forEach(p => {
               if (p.innerHTML.trim() === '' || p.innerHTML.trim() === '<br>') {
                   p.remove();
@@ -194,15 +188,16 @@ export default apiInitializer("0.11", (api) => {
         
         secureElements.forEach(el => el.classList.add("processed"));
 
-        // 【精准判定预览区】：通过查找最近的父级类名来 100% 确认是否处于发帖预览阶段
+        // 【精准判定预览区】：不管有没有 TopicID，只要在 .d-editor-preview 容器内，就强制处于预览模式
         const isPreview = element.classList.contains("d-editor-preview") || element.closest(".d-editor-preview");
         if (isPreview) {
           secureElements.forEach(el => {
-              el.classList.add("secure-preview");
+              el.classList.remove("secure-wrapper"); // 移除原生隐藏类
+              el.classList.add("secure-preview"); // 替换为预览独立类
               el.setAttribute("data-preview-prefix", txt.preview);
           });
           if (window.applyExternalLinkShield) window.applyExternalLinkShield(element);
-          return; 
+          return; // 预览区直接结束，不再去请求后台解锁逻辑
         }
 
         let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.id || helper?.widget?.model?.topic_id || helper?.widget?.model?.id;
