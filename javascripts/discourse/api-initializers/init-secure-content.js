@@ -3,78 +3,51 @@ import { ajax } from "discourse/lib/ajax";
 
 export default apiInitializer("0.11", (api) => {
   const currentUser = api.getCurrentUser();
+  const lang = (window.I18n ? window.I18n.currentLocale() : "zh_CN").startsWith("zh") ? "zh" : "en";
 
-  const STRINGS = {
-    zh_CN: {
-      btn_login_title: "插入登录可见块",
-      btn_reply_title: "插入回复可见块",
-      raw_login_text: "此处内容登录后可见...",
-      raw_reply_text: "此处内容回复后可见...",
+  const txt = {
+    zh: {
+      btn_login: "插入登录可见",
+      btn_reply: "插入回复可见",
+      txt_login: "此处内容登录后可见",
+      txt_reply: "此处内容回复后可见",
       mask_login: `此内容仅供登录用户查看，请 <a href="/login" class="secure-link-btn">登录</a>`,
       mask_reply: `此内容隐藏，请 <a href="#" class="secure-link-btn trigger-reply">回复本帖</a> 后查看`,
       mask_login_reply: `此内容需回复可见，请先 <a href="/login" class="secure-link-btn">登录</a>`,
-      preview_prefix: "🔒 隐藏内容预览",
+      preview: "🔒 隐藏内容预览"
     },
     en: {
-      btn_login_title: "Insert Login-only Block",
-      btn_reply_title: "Insert Reply-only Block",
-      raw_login_text: "Content visible after login...",
-      raw_reply_text: "Content visible after reply...",
+      btn_login: "Insert Login Block",
+      btn_reply: "Insert Reply Block",
+      txt_login: "Content visible after login",
+      txt_reply: "Content visible after reply",
       mask_login: `Content hidden. Please <a href="/login" class="secure-link-btn">Log In</a> to view.`,
       mask_reply: `Content hidden. Please <a href="#" class="secure-link-btn trigger-reply">Reply</a> to view.`,
       mask_login_reply: `Reply required. Please <a href="/login" class="secure-link-btn">Log In</a> first.`,
-      preview_prefix: "🔒 Hidden Content Preview",
+      preview: "🔒 Hidden Content Preview"
     }
-  };
+  }[lang];
 
-  const locale = I18n.currentLocale(); 
-  const langKey = locale.startsWith("zh") ? "zh_CN" : "en";
-  const R = STRINGS[langKey] || STRINGS["en"];
-
-  // ==========================================
-  // 1. 找回丢失的编辑器按钮！
-  // ==========================================
-  if (!I18n.translations[locale]) I18n.translations[locale] = {};
-  if (!I18n.translations[locale].js) I18n.translations[locale].js = {};
-  if (!I18n.translations[locale].js.composer) I18n.translations[locale].js.composer = {};
-  
-  const KEY_LOGIN_BTN = "secure_login_btn_title";
-  const KEY_REPLY_BTN = "secure_reply_btn_title";
-  const KEY_LOGIN_TEXT = "secure_login_default_text"; 
-  const KEY_REPLY_TEXT = "secure_reply_default_text"; 
-
-  I18n.translations[locale].js[KEY_LOGIN_BTN] = R.btn_login_title;
-  I18n.translations[locale].js[KEY_REPLY_BTN] = R.btn_reply_title;
-  I18n.translations[locale].js.composer[KEY_LOGIN_TEXT] = R.raw_login_text;
-  I18n.translations[locale].js.composer[KEY_REPLY_TEXT] = R.raw_reply_text;
-
+  // 1. 安全挂载编辑器按钮（绝对不会消失了）
   api.onToolbarCreate((toolbar) => {
     toolbar.addButton({
       id: "insert_login_tag",
-      group: "extras",
+      group: "insertations",
       icon: "lock",
-      title: KEY_LOGIN_BTN, 
-      perform: (e) => {
-        e.applySurround("\n[login]\n", "\n[/login]\n", KEY_LOGIN_TEXT);
-      },
+      title: txt.btn_login,
+      perform: (e) => e.applySurround("\n[login]\n", "\n[/login]\n", txt.txt_login)
     });
-
     toolbar.addButton({
       id: "insert_reply_tag",
-      group: "extras",
-      icon: "comment", 
-      title: KEY_REPLY_BTN, 
-      perform: (e) => {
-        e.applySurround("\n[reply]\n", "\n[/reply]\n", KEY_REPLY_TEXT);
-      },
+      group: "insertations",
+      icon: "comment",
+      title: txt.btn_reply,
+      perform: (e) => e.applySurround("\n[reply]\n", "\n[/reply]\n", txt.txt_reply)
     });
   });
 
-  // ==========================================
-  // 2. 状态缓存与校验
-  // ==========================================
+  // 2. 状态检查机制
   const replyStatusCache = new Map();
-  
   async function checkUserReplied(userId, topicId) {
     const key = `${userId}:${topicId}`;
     if (replyStatusCache.has(key)) return replyStatusCache.get(key);
@@ -83,22 +56,15 @@ export default apiInitializer("0.11", (api) => {
         replyStatusCache.set(key, false);
         return false;
     }
-
     if (document.querySelector(`article[data-user-id="${userId}"]`)) {
         replyStatusCache.set(key, true);
         return true;
     }
-
     try {
       const result = await ajax(`/t/${topicId}.json`);
-      let hasPost = false;
-      if (result.details && result.details.user_data && typeof result.details.user_data.posted === 'boolean') {
-          hasPost = result.details.user_data.posted;
-      } else {
-          hasPost = result.details && result.details.participants && result.details.participants.some(p => p.id === userId);
-      }
-      replyStatusCache.set(key, !!hasPost);
-      return !!hasPost;
+      let hasPost = result.details?.user_data?.posted || result.details?.participants?.some(p => p.id === userId) || false;
+      replyStatusCache.set(key, hasPost);
+      return hasPost;
     } catch (e) {
       return false;
     }
@@ -118,101 +84,54 @@ export default apiInitializer("0.11", (api) => {
       if (replyTrigger) {
         replyTrigger.addEventListener("click", (e) => {
             e.preventDefault();
-            const selectors = [
-                ".topic-footer-main-buttons .create", 
-                ".post-action-menu__reply",
-                "#topic-footer-buttons .btn-primary"
-            ];
-            let btn = null;
-            for (const sel of selectors) {
-                btn = document.querySelector(sel);
-                if (btn) break;
-            }
+            const btn = document.querySelector(".topic-footer-main-buttons .create") || document.querySelector(".post-action-menu__reply");
             if (btn) btn.click();
             else window.scrollTo(0, document.body.scrollHeight);
         });
       }
-      
       el.innerHTML = ""; 
       el.appendChild(maskDiv);
       el.style.display = "block";
   }
 
-  function cleanInnerHtml(html) {
-    if (!html) return "";
-    let c = html;
-    c = c.replace(/^(\s*<br\s*\/?>\s*|\s*<p>\s*|\s+)+/gi, "");
-    c = c.replace(/(\s*<br\s*\/?>\s*|\s*<\/p>\s*|\s+)+$/gi, "");
-    return c;
-  }
-
-  // ==========================================
-  // 3. 核心渲染 (移除 onlyStream 限制，使预览框生效)
-  // ==========================================
+  // 3. 核心装饰器（暴力替换，无视自动生成的换行）
   api.decorateCookedElement(
     async (element, helper) => {
       try {
         let html = element.innerHTML;
-        let hasChanged = false;
-
-        if (/\[login\]/i.test(html)) {
-          html = html.replace(
-             /\[login\]([\s\S]*?)\[\/login\]/gim, 
-             (m, p1) => `<div class="secure-wrapper" data-secure-type="login">${cleanInnerHtml(p1)}</div>`
-          );
-          hasChanged = true;
-        }
-
-        if (/\[reply\]/i.test(html)) {
-          html = html.replace(
-             /\[reply\]([\s\S]*?)\[\/reply\]/gim, 
-             (m, p1) => `<div class="secure-wrapper" data-secure-type="reply">${cleanInnerHtml(p1)}</div>`
-          );
-          hasChanged = true;
-        }
-
-        if (hasChanged) {
+        if (/\[login\]|\[reply\]/i.test(html)) {
+          // 强力替换，连带 Discourse 自动加的 P 和 br 一起吃掉！
+          html = html.replace(/(?:<p>|<br\s*\/?>)*\s*\[login\]\s*(?:<\/p>|<br\s*\/?>)*/gi, '<div class="secure-wrapper" data-secure-type="login">')
+                     .replace(/(?:<p>|<br\s*\/?>)*\s*\[\/login\]\s*(?:<\/p>|<br\s*\/?>)*/gi, '</div>')
+                     .replace(/(?:<p>|<br\s*\/?>)*\s*\[reply\]\s*(?:<\/p>|<br\s*\/?>)*/gi, '<div class="secure-wrapper" data-secure-type="reply">')
+                     .replace(/(?:<p>|<br\s*\/?>)*\s*\[\/reply\]\s*(?:<\/p>|<br\s*\/?>)*/gi, '</div>');
           element.innerHTML = html;
         }
 
         const secureElements = element.querySelectorAll(".secure-wrapper");
         if (!secureElements.length) return;
         
-        let topicId = null;
-        if (helper) {
-          if (typeof helper.getModel === 'function' && helper.getModel()) {
-              topicId = helper.getModel().topic_id || helper.getModel().id;
-          } else if (helper.widget && helper.widget.model) {
-              topicId = helper.widget.model.topic_id || helper.widget.model.id;
-          }
-        }
-        
+        let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.id || helper?.widget?.model?.topic_id || helper?.widget?.model?.id;
         if (!topicId) {
             const match = window.location.pathname.match(/\/t\/[^\/]+\/(\d+)/);
             if (match) topicId = match[1];
         }
 
-        // 编辑器预览模式下
+        // 预览框生效
         if (!topicId && !document.body.classList.contains("topic-page")) {
           secureElements.forEach(el => {
               el.classList.add("secure-preview");
-              el.setAttribute("data-preview-prefix", R.preview_prefix);
+              el.setAttribute("data-preview-prefix", txt.preview);
+              el.style.display = "block";
           });
-          // 让外部链接护盾再次给它穿上防护服
           if (window.applyExternalLinkShield) window.applyExternalLinkShield(element);
           return; 
         }
 
         let hasReplied = false;
-        let replyCheckPromise = Promise.resolve(false);
         const needsReplyCheck = Array.from(secureElements).some(el => el.dataset.secureType === "reply");
-
         if (needsReplyCheck && currentUser && topicId) {
-           replyCheckPromise = checkUserReplied(currentUser.id, topicId);
-        }
-
-        if (needsReplyCheck && currentUser) {
-           hasReplied = await replyCheckPromise;
+           hasReplied = await checkUserReplied(currentUser.id, topicId);
         }
 
         secureElements.forEach((el) => {
@@ -223,12 +142,11 @@ export default apiInitializer("0.11", (api) => {
 
           if (type === "login") {
             if (currentUser) isLocked = false; 
-            else { msgHtml = R.mask_login; icon = "lock"; }
+            else { msgHtml = txt.mask_login; icon = "lock"; }
           } else if (type === "reply") {
-            if (!currentUser) { msgHtml = R.mask_login_reply; icon = "lock"; }
-            // 题主/楼主、管理员/版主、以及回复过的用户免回可见
+            if (!currentUser) { msgHtml = txt.mask_login_reply; icon = "lock"; }
             else if (hasReplied || currentUser.admin || currentUser.moderator || currentUser.id === helper?.getModel?.()?.user_id) isLocked = false;
-            else { msgHtml = R.mask_reply; icon = "reply"; }
+            else { msgHtml = txt.mask_reply; icon = "reply"; }
           }
 
           if (isLocked) {
@@ -236,16 +154,17 @@ export default apiInitializer("0.11", (api) => {
           } else {
             el.classList.remove("secure-wrapper");
             el.classList.add("secure-unlocked");
-            // 解锁后，主动呼叫隔壁【外部链接护盾】插件来补图标
+            el.style.display = "block";
+            // 解锁后立即请求隔壁护盾打上图标
             if (window.applyExternalLinkShield) {
                window.applyExternalLinkShield(el);
             }
           }
         });
       } catch (err) {
-        console.error("[Secure Content] Rendering error:", err);
+        console.error("Secure Content Error:", err);
       }
     },
-    { id: "secure-content-decorator" } // 去掉了上次作死的 onlyStream: true，复活预览功能
+    { id: "secure-content-decorator" } // 移除了 onlyStream，预览和全页面生效！
   );
 });
