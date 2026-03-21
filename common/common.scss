@@ -1,13 +1,12 @@
-/* 成功解锁后的真实内容 */
-.secure-unlocked { 
-  animation: fade-in 0.3s ease-out; 
-  display: block; 
-  width: 100%; 
+/* 确保被标记的节点绝对隐身，不占位置 */
+.secure-hidden-element { 
+  display: none !important; 
 }
 
-@keyframes fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
+/* 强力消除隐藏框外部 P 标签自带的间距 */
+p.secure-mask-wrapper-p {
+  margin: 0 !important;
+  padding: 0 !important;
 }
 
 /* =========================================
@@ -25,6 +24,7 @@
   padding: 4px 10px;
   border-radius: 6px;
   box-sizing: border-box;
+  animation: fade-in 0.3s ease-out;
 }
 
 /* =========================================
@@ -36,7 +36,7 @@
   align-items: center;
   justify-content: flex-start;
   gap: 12px;
-  margin: 0; /* 强力消除隐藏块首尾自带的多余白距 */
+  margin: 0.5em 0; 
   padding: 12px 16px;
   border-radius: 10px;
   background: rgba(var(--primary-rgb), 0.03); 
@@ -85,4 +85,9 @@
 
   &.type-login .secure-icon-container { color: var(--danger); }
   &.type-reply .secure-icon-container { color: var(--tertiary); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
