@@ -1,14 +1,8 @@
-/* 尚未解析时的默认隐藏 */
-.secure-wrapper { display: none; }
-
 /* 成功解锁后的真实内容 */
 .secure-unlocked { 
   animation: fade-in 0.3s ease-out; 
   display: block; 
   width: 100%; 
-  box-sizing: border-box; 
-  margin: 0; 
-  padding: 0;
 }
 
 @keyframes fade-in {
@@ -17,30 +11,20 @@
 }
 
 /* =========================================
-   专属编辑器预览区的样式（虚线边框+高亮Title）
+   专属编辑器预览区的样式（顶部警示小徽章）
    ========================================= */
-.secure-preview {
-  display: block !important;
-  border: 2px dashed var(--tertiary-medium);
-  padding: 14px 16px;
-  margin: 0.5em 0;
-  background: rgba(var(--tertiary-rgb), 0.05);
-  border-radius: 8px;
-  width: 100%;
+.secure-preview-badge {
+  display: inline-block;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-weight: 700;
+  margin: 8px 0;
+  color: var(--tertiary);
+  font-size: 13px;
+  background: rgba(var(--tertiary-rgb), 0.1);
+  border: 1px solid rgba(var(--tertiary-rgb), 0.2);
+  padding: 4px 10px;
+  border-radius: 6px;
   box-sizing: border-box;
-  position: relative;
-  
-  &::before {
-    content: attr(data-preview-prefix);
-    display: inline-block;
-    font-weight: 700;
-    margin-bottom: 12px;
-    color: var(--tertiary);
-    font-size: 0.85em;
-    background: rgba(var(--tertiary-rgb), 0.15);
-    padding: 4px 8px;
-    border-radius: 4px;
-  }
 }
 
 /* =========================================
@@ -52,7 +36,7 @@
   align-items: center;
   justify-content: flex-start;
   gap: 12px;
-  margin: 0.5em 0; 
+  margin: 0; /* 强力消除隐藏块首尾自带的多余白距 */
   padding: 12px 16px;
   border-radius: 10px;
   background: rgba(var(--primary-rgb), 0.03); 
