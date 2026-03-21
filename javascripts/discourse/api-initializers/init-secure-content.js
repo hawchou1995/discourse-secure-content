@@ -15,7 +15,7 @@ export default apiInitializer("0.11", (api) => {
       mask_login: `此内容仅供登录用户查看，请 <a href="/login" class="secure-link-btn">登录</a>`,
       mask_reply: `此内容隐藏，请 <a href="#" class="secure-link-btn trigger-reply">回复本帖</a> 后查看`,
       mask_login_reply: `此内容需回复可见，请先 <a href="/login" class="secure-link-btn">登录</a>`,
-      preview: "🔒 隐藏内容预览（正式发布后根据权限显示）"
+      preview: "🔒 隐藏内容预览"
     },
     en: {
       btn_login: "Insert Login Block",
@@ -74,170 +74,166 @@ export default apiInitializer("0.11", (api) => {
     } catch (e) { return false; }
   }
 
-  function renderMask(el, type, icon, msgHtml) {
-      const maskNode = document.createElement("div");
-      maskNode.className = `secure-content-mask apple-style type-${type}`;
-      maskNode.innerHTML = `
-          <span class="secure-icon-container">
-            <svg class="fa d-icon d-icon-${icon} svg-icon"><use href="#${icon}"></use></svg>
-          </span>
-          <span class="secure-text">${msgHtml}</span>
-       `;
-
-      const replyTrigger = maskNode.querySelector(".trigger-reply");
-      if (replyTrigger) {
-        replyTrigger.addEventListener("click", (e) => {
-            e.preventDefault();
-            const btn = document.querySelector(".topic-footer-main-buttons .create") || document.querySelector(".post-action-menu__reply");
-            if (btn) btn.click();
-            else window.scrollTo(0, document.body.scrollHeight);
-        });
-      }
-      el.innerHTML = ""; 
-      el.appendChild(maskNode);
-  }
-
-  function wrapSecureTags(element, type) {
-      const startTag = `[${type}]`;
-      const endTag = `[/${type}]`;
-      let hasChanges = false;
-      let safety = 50; 
-
-      while (safety-- > 0) {
-          let walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
-          let startNode = null;
-          while (walker.nextNode()) {
-              if (walker.currentNode.nodeValue.toLowerCase().includes(startTag)) {
-                  startNode = walker.currentNode;
-                  break;
-              }
-          }
-          if (!startNode) break; 
-
-          let startIdx = startNode.nodeValue.toLowerCase().indexOf(startTag);
-          let startTagNode = startNode.splitText(startIdx);
-          startTagNode.splitText(startTag.length);
-
-          walker.currentNode = startTagNode;
-          let endNode = null;
-          while (walker.nextNode()) {
-              if (walker.currentNode.nodeValue.toLowerCase().includes(endTag)) {
-                  endNode = walker.currentNode;
-                  break;
-              }
-          }
-
-          if (!endNode) {
-              startTagNode.nodeValue = ""; 
-              break;
-          }
-
-          let endIdx = endNode.nodeValue.toLowerCase().indexOf(endTag);
-          let endTagNode = endNode.splitText(endIdx);
-          endTagNode.splitText(endTag.length);
-
-          let range = document.createRange();
-          range.setStartAfter(startTagNode);
-          range.setEndBefore(endTagNode);
-
-          let content = range.extractContents();
-          
-          // 【强力除杂】去除被提取内容头部和尾部的空行/换行
-          while (content.firstChild && (content.firstChild.nodeName === 'BR' || (content.firstChild.nodeType === Node.TEXT_NODE && content.firstChild.nodeValue.trim() === ''))) {
-              content.firstChild.remove();
-          }
-          while (content.lastChild && (content.lastChild.nodeName === 'BR' || (content.lastChild.nodeType === Node.TEXT_NODE && content.lastChild.nodeValue.trim() === ''))) {
-              content.lastChild.remove();
-          }
-
-          let wrapper = document.createElement('div');
-          wrapper.className = 'secure-wrapper';
-          wrapper.dataset.secureType = type;
-          wrapper.appendChild(content);
-
-          range.insertNode(wrapper);
-
-          // 销毁首尾标签占位符
-          startTagNode.remove();
-          endTagNode.remove();
-
-          // 顺手删掉被抽空的外层 P 标签
-          element.querySelectorAll('p').forEach(p => {
-              if (p.innerHTML.trim() === '' || p.innerHTML.trim() === '<br>') {
-                  p.remove();
-              }
-          });
-
-          hasChanges = true;
-      }
-      return hasChanges;
-  }
-
   async function applySecureContent(element, helper) {
-      try {
-        let changedLogin = wrapSecureTags(element, 'login');
-        let changedReply = wrapSecureTags(element, 'reply');
-
-        const secureElements = element.querySelectorAll(".secure-wrapper:not(.processed)");
-        if (!secureElements.length) {
-            if ((changedLogin || changedReply) && window.applyExternalLinkShield) {
-                window.applyExternalLinkShield(element);
-            }
-            return;
-        }
-        
-        secureElements.forEach(el => el.classList.add("processed"));
-
-        // 【精准判定预览区】：不管有没有 TopicID，只要在 .d-editor-preview 容器内，就强制处于预览模式
-        const isPreview = element.classList.contains("d-editor-preview") || element.closest(".d-editor-preview");
-        if (isPreview) {
-          secureElements.forEach(el => {
-              el.classList.remove("secure-wrapper"); // 移除原生隐藏类
-              el.classList.add("secure-preview"); // 替换为预览独立类
-              el.setAttribute("data-preview-prefix", txt.preview);
-          });
-          if (window.applyExternalLinkShield) window.applyExternalLinkShield(element);
-          return; // 预览区直接结束，不再去请求后台解锁逻辑
-        }
-
-        let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.id || helper?.widget?.model?.topic_id || helper?.widget?.model?.id;
-        if (!topicId) {
-            const match = window.location.pathname.match(/\/t\/[^\/]+\/(\d+)/);
-            if (match) topicId = match[1];
-        }
-
-        let hasReplied = false;
-        const needsReplyCheck = Array.from(secureElements).some(el => el.dataset.secureType === "reply");
-        if (needsReplyCheck && currentUser && topicId) {
-           hasReplied = await checkUserReplied(currentUser.id, topicId);
-        }
-
-        secureElements.forEach((el) => {
-          const type = el.dataset.secureType;
-          let isLocked = true;
-          let msgHtml = "";
-          let icon = "lock";
-
-          if (type === "login") {
-            if (currentUser) isLocked = false; 
-            else { msgHtml = txt.mask_login; icon = "lock"; }
-          } else if (type === "reply") {
-            if (!currentUser) { msgHtml = txt.mask_login_reply; icon = "lock"; }
-            else if (hasReplied || currentUser.admin || currentUser.moderator || currentUser.id === helper?.getModel?.()?.user_id) isLocked = false;
-            else { msgHtml = txt.mask_reply; icon = "reply"; }
-          }
-
-          if (isLocked) {
-            renderMask(el, type, icon, msgHtml);
-          } else {
-            el.classList.remove("secure-wrapper");
-            el.classList.add("secure-unlocked");
-            if (window.applyExternalLinkShield) window.applyExternalLinkShield(el);
-          }
-        });
-      } catch (err) {
-        console.error("Secure Content Error:", err);
+      const isPreview = element.classList.contains("d-editor-preview") || element.closest(".d-editor-preview");
+      
+      let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.id || helper?.widget?.model?.topic_id || helper?.widget?.model?.id;
+      if (!topicId) {
+          const match = window.location.pathname.match(/\/t\/[^\/]+\/(\d+)/);
+          if (match) topicId = match[1];
       }
+
+      let hasReplied = false;
+      if (currentUser && topicId && !isPreview) {
+          hasReplied = await checkUserReplied(currentUser.id, topicId);
+      }
+
+      ['login', 'reply'].forEach(type => {
+          const startTag = `[${type}]`;
+          const endTag = `[/${type}]`;
+          let safety = 50; 
+
+          while (safety-- > 0) {
+              // 1. 寻找文本节点
+              let walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
+              let startNode = null;
+              while (walker.nextNode()) {
+                  if (walker.currentNode.nodeValue.toLowerCase().includes(startTag)) {
+                      startNode = walker.currentNode;
+                      break;
+                  }
+              }
+              if (!startNode) break; 
+
+              // 2. 切割分离出纯粹的标签节点
+              let startIdx = startNode.nodeValue.toLowerCase().indexOf(startTag);
+              let startTagNode = startNode.splitText(startIdx);
+              startTagNode.splitText(startTag.length);
+
+              walker.currentNode = startTagNode;
+              let endNode = null;
+              while (walker.nextNode()) {
+                  if (walker.currentNode.nodeValue.toLowerCase().includes(endTag)) {
+                      endNode = walker.currentNode;
+                      break;
+                  }
+              }
+
+              if (!endNode) {
+                  startTagNode.nodeValue = ""; 
+                  break;
+              }
+
+              let endIdx = endNode.nodeValue.toLowerCase().indexOf(endTag);
+              let endTagNode = endNode.splitText(endIdx);
+              endTagNode.splitText(endTag.length);
+
+              // 清除标签文本
+              startTagNode.nodeValue = "";
+              endTagNode.nodeValue = "";
+
+              // 【无损隐藏换行】：不删除节点！只隐藏周围的 BR 换行符
+              const hideBr = (node) => {
+                  if (node && node.nodeName === 'BR') {
+                      node.style.display = 'none';
+                  }
+              };
+              hideBr(startTagNode.previousSibling);
+              hideBr(startTagNode.nextSibling);
+              hideBr(endTagNode.previousSibling);
+              hideBr(endTagNode.nextSibling);
+
+              // ---------------- 编辑器预览模式 ----------------
+              if (isPreview) {
+                  let badge = document.createElement('div');
+                  badge.className = 'secure-preview-badge';
+                  badge.innerHTML = txt.preview;
+                  startTagNode.parentNode.insertBefore(badge, startTagNode);
+                  // 预览区我们直接保留内容可见，只加一个 Badge 提示
+                  continue; 
+              }
+
+              // ---------------- 正式帖子模式 ----------------
+              let isLocked = true;
+              if (type === "login" && currentUser) isLocked = false;
+              if (type === "reply" && (hasReplied || (currentUser && (currentUser.admin || currentUser.moderator || currentUser.id === helper?.getModel?.()?.user_id)))) isLocked = false;
+
+              if (!isLocked) {
+                  // 已解锁：不需要隐藏内容，直接呼叫外链护盾加图标
+                  if (window.applyExternalLinkShield) {
+                      let nWalker = document.createTreeWalker(element, NodeFilter.SHOW_ELEMENT, null, false);
+                      nWalker.currentNode = startTagNode;
+                      while (nWalker.nextNode()) {
+                          if (nWalker.currentNode === endTagNode) break;
+                          if (!nWalker.currentNode.contains(endTagNode)) {
+                              window.applyExternalLinkShield(nWalker.currentNode);
+                          }
+                      }
+                  }
+                  continue;
+              }
+
+              // ---------------- 锁定状态：原位无损隐身 ----------------
+              let nodesToHide = [];
+              let nWalker = document.createTreeWalker(element, NodeFilter.SHOW_ALL, null, false);
+              nWalker.currentNode = startTagNode;
+              while (nWalker.nextNode()) {
+                  let curr = nWalker.currentNode;
+                  if (curr === endTagNode) break;
+                  if (!curr.contains(endTagNode)) nodesToHide.push(curr);
+              }
+
+              // 核心！不改变层级，直接隐身节点
+              nodesToHide.forEach(node => {
+                  if (node.nodeType === Node.ELEMENT_NODE) {
+                      node.style.display = 'none';
+                      node.classList.add('secure-hidden-element');
+                  } else if (node.nodeType === Node.TEXT_NODE) {
+                      node.originalText = node.nodeValue; // 将文本暂存到对象上
+                      node.nodeValue = ''; // 清空内容
+                  }
+              });
+
+              // 【无损隐藏空段落】：如果段落只剩下不可见元素，则隐藏段落防止多余空行
+              const hideIfEmpty = (el) => {
+                  if (el && el.nodeName === 'P') {
+                      const hasVisible = Array.from(el.childNodes).some(child => {
+                          if (child.nodeType === Node.TEXT_NODE && child.nodeValue.trim() !== '') return true;
+                          if (child.nodeType === Node.ELEMENT_NODE && child.style.display !== 'none' && !child.classList.contains('secure-content-mask')) return true;
+                          return false;
+                      });
+                      if (!hasVisible) el.style.display = 'none';
+                  }
+              };
+
+              let maskNode = document.createElement("div");
+              maskNode.className = `secure-content-mask apple-style type-${type}`;
+              let msgHtml = type === 'login' ? txt.mask_login : (!currentUser ? txt.mask_login_reply : txt.mask_reply);
+              let icon = type === 'login' ? 'lock' : (!currentUser ? 'lock' : 'reply');
+              
+              maskNode.innerHTML = `
+                  <span class="secure-icon-container">
+                    <svg class="fa d-icon d-icon-${icon} svg-icon"><use href="#${icon}"></use></svg>
+                  </span>
+                  <span class="secure-text">${msgHtml}</span>
+              `;
+
+              const replyTrigger = maskNode.querySelector(".trigger-reply");
+              if (replyTrigger) {
+                replyTrigger.addEventListener("click", (e) => {
+                    e.preventDefault();
+                    const btn = document.querySelector(".topic-footer-main-buttons .create") || document.querySelector(".post-action-menu__reply");
+                    if (btn) btn.click();
+                    else window.scrollTo(0, document.body.scrollHeight);
+                });
+              }
+
+              // 插入面具，大功告成
+              startTagNode.parentNode.insertBefore(maskNode, startTagNode);
+              hideIfEmpty(startTagNode.parentElement);
+              hideIfEmpty(endTagNode.parentElement);
+          }
+      });
   }
 
   api.decorateCookedElement(
