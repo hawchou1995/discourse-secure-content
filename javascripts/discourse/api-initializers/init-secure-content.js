@@ -29,6 +29,9 @@ export default apiInitializer("0.11", (api) => {
     }
   }[lang];
 
+  // ==========================================
+  // 1. 国际化与编辑器按钮
+  // ==========================================
   if (window.I18n && window.I18n.translations && window.I18n.translations[locale]) {
       let trans = window.I18n.translations[locale];
       trans.js = trans.js || {};
@@ -56,6 +59,9 @@ export default apiInitializer("0.11", (api) => {
     });
   });
 
+  // ==========================================
+  // 2. 权限校验逻辑
+  // ==========================================
   const replyStatusCache = new Map();
   async function checkUserReplied(userId, topicId) {
     const key = `${userId}:${topicId}`;
@@ -63,9 +69,11 @@ export default apiInitializer("0.11", (api) => {
     if (currentUser && currentUser.post_count === 0) {
         replyStatusCache.set(key, false); return false;
     }
+    // 快速检查当前页面有没有这个用户的帖子
     if (document.querySelector(`article[data-user-id="${userId}"]`)) {
         replyStatusCache.set(key, true); return true;
     }
+    // 降级：发 API 请求
     try {
       const result = await ajax(`/t/${topicId}.json`);
       let hasPost = result.details?.user_data?.posted || result.details?.participants?.some(p => p.id === userId) || false;
@@ -95,173 +103,157 @@ export default apiInitializer("0.11", (api) => {
       return maskNode;
   }
 
-  async function applySecureContent(element, helper) {
-      const isPreview = element.classList.contains("d-editor-preview") || element.closest(".d-editor-preview");
+  // ==========================================
+  // 3. 【核心优化】接管 Markdown 渲染，不再做恶心的 DOM 字符串替换！
+  // ==========================================
+  
+  // 注册一个 Markdown 块级规则
+  api.registerMarkdownItPlugin("secure-content", (md) => {
+    // 编写自定义规则来处理 [login] 和 [reply] 标签
+    const secureContentRule = (state, startLine, endLine, silent) => {
+      let start = state.bMarks[startLine] + state.tShift[startLine];
+      let max = state.eMarks[startLine];
+
+      // 如果不是以 '[' 开头，直接跳过
+      if (state.src.charCodeAt(start) !== 0x5b /* [ */) return false;
+
+      let tagMatch = state.src.slice(start, max).match(/^\[(login|reply)\]/i);
+      if (!tagMatch) return false;
+
+      let type = tagMatch[1].toLowerCase();
+      let closeTag = `[/${type}]`;
+
+      // 寻找结束标签
+      let nextLine = startLine;
+      let foundClose = false;
       
-      // 彻底移除对 helper.widget 的访问，完美修复官方升级警告！
-      let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.topic?.id || helper?.getModel?.()?.id;
-      if (!topicId) {
-          const match = window.location.pathname.match(/\/t\/[^\/]+\/(\d+)/);
-          if (match) topicId = match[1];
+      while (nextLine < endLine) {
+        nextLine++;
+        if (nextLine >= endLine) break;
+
+        start = state.bMarks[nextLine] + state.tShift[nextLine];
+        max = state.eMarks[nextLine];
+
+        if (state.src.slice(start, max).trim().toLowerCase() === closeTag) {
+          foundClose = true;
+          break;
+        }
       }
 
-      let hasReplied = false;
-      if (currentUser && topicId && !isPreview) {
-          hasReplied = await checkUserReplied(currentUser.id, topicId);
-      }
+      if (!foundClose) return false;
+      if (silent) return true;
 
-      ['login', 'reply'].forEach(type => {
-          const startTag = `[${type}]`;
-          const endTag = `[/${type}]`;
-          let safety = 50; 
+      // 生成安全的 Token 树
+      let token;
+      
+      // 开启一个 div，给它打上我们自己的属性
+      token = state.push("secure_content_open", "div", 1);
+      token.attrs = [["class", "secure-wrapper"], ["data-secure-type", type]];
+      token.map = [startLine, nextLine];
 
-          while (safety-- > 0) {
-              let walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
-              let startNode = null;
-              while (walker.nextNode()) {
-                  if (walker.currentNode.nodeValue.toLowerCase().includes(startTag)) {
-                      startNode = walker.currentNode;
-                      break;
-                  }
-              }
-              if (!startNode) break; 
+      // 将中间的内容交给 Markdown 继续递归解析
+      state.md.block.tokenize(state, startLine + 1, nextLine);
 
-              let startIdx = startNode.nodeValue.toLowerCase().indexOf(startTag);
-              let startTagNode = startNode.splitText(startIdx);
-              startTagNode.splitText(startTag.length);
+      // 关闭 div
+      token = state.push("secure_content_close", "div", -1);
 
-              walker.currentNode = startTagNode;
-              let endNode = null;
-              while (walker.nextNode()) {
-                  if (walker.currentNode.nodeValue.toLowerCase().includes(endTag)) {
-                      endNode = walker.currentNode;
-                      break;
-                  }
-              }
+      state.line = nextLine + 1;
+      return true;
+    };
 
-              if (!endNode) {
-                  startTagNode.nodeValue = ""; 
-                  break;
-              }
+    // 把规则插入到 Markdown 解析流中，优先级高于段落
+    md.block.ruler.before("paragraph", "secure_content", secureContentRule);
+  });
 
-              let endIdx = endNode.nodeValue.toLowerCase().indexOf(endTag);
-              let endTagNode = endNode.splitText(endIdx);
-              endTagNode.splitText(endTag.length);
 
-              if (startTagNode._secureProcessed) break;
-              startTagNode._secureProcessed = true;
+  // ==========================================
+  // 4. 只负责状态切换，不动 DOM 结构！
+  // ==========================================
+  async function applySecureContent(element, helper) {
+      try {
+        const secureElements = element.querySelectorAll(".secure-wrapper:not(.processed)");
+        
+        if (!secureElements.length) return;
+        
+        secureElements.forEach(el => el.classList.add("processed"));
 
-              // 清空标签的文字，保留节点
-              startTagNode.nodeValue = "";
-              endTagNode.nodeValue = "";
+        // 【精准判定预览区】
+        const isPreview = element.classList.contains("d-editor-preview") || element.closest(".d-editor-preview");
+        
+        if (isPreview) {
+          secureElements.forEach(el => {
+              el.classList.remove("secure-wrapper");
+              el.classList.add("secure-preview");
+              el.setAttribute("data-preview-prefix", txt.preview);
+          });
+          if (window.applyExternalLinkShield) window.applyExternalLinkShield(element);
+          return; 
+        }
 
-              // 【原位消灭换行】在任何状态下都向两边扫描，隐藏因为 markdown 解析而多出的换行
-              const hideAdjacentBr = (node, direction) => {
-                  let curr = direction === 'next' ? node.nextSibling : node.previousSibling;
-                  while (curr) {
-                      if (curr.nodeType === Node.TEXT_NODE && curr.nodeValue.trim() === '') {
-                          curr = direction === 'next' ? curr.nextSibling : curr.previousSibling;
-                          continue;
-                      }
-                      if (curr.nodeName === 'BR') {
-                          curr.style.display = 'none';
-                          curr.classList.add('secure-hidden-element');
-                      }
-                      break;
-                  }
-              };
-              hideAdjacentBr(startTagNode, 'prev');
-              hideAdjacentBr(startTagNode, 'next');
-              hideAdjacentBr(endTagNode, 'prev');
-              hideAdjacentBr(endTagNode, 'next');
+        // 兼容新旧获取 ID 的方式
+        let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.topic?.id || helper?.getModel?.()?.id;
+        if (!topicId) {
+            const match = window.location.pathname.match(/\/t\/[^\/]+\/(\d+)/);
+            if (match) topicId = match[1];
+        }
 
-              // 【编辑器预览模式】：插入提示框，内容依旧可见
-              if (isPreview) {
-                  let badge = document.createElement('div');
-                  badge.className = 'secure-preview-badge';
-                  badge.innerHTML = txt.preview;
-                  startTagNode.parentNode.insertBefore(badge, startTagNode);
-                  continue; 
-              }
+        let hasReplied = false;
+        const needsReplyCheck = Array.from(secureElements).some(el => el.dataset.secureType === "reply");
+        if (needsReplyCheck && currentUser && topicId) {
+           hasReplied = await checkUserReplied(currentUser.id, topicId);
+        }
 
-              // 【真实展示模式】：权限计算
-              let isLocked = true;
-              if (type === "login" && currentUser) isLocked = false;
-              if (type === "reply" && (hasReplied || (currentUser && (currentUser.admin || currentUser.moderator || currentUser.id === helper?.getModel?.()?.user_id)))) isLocked = false;
+        secureElements.forEach((el) => {
+          const type = el.dataset.secureType;
+          let isLocked = true;
+          let msgHtml = "";
+          let icon = "lock";
 
-              if (isLocked) {
-                  // 原地打码大法：不动层级，让内容节点直接隐身
-                  let nodesToHide = [];
-                  let nWalker = document.createTreeWalker(element, NodeFilter.SHOW_ALL, null, false);
-                  nWalker.currentNode = startTagNode;
-                  while (nWalker.nextNode()) {
-                      let curr = nWalker.currentNode;
-                      if (curr === endTagNode) break;
-                      if (!curr.contains(endTagNode)) nodesToHide.push(curr);
-                  }
-
-                  nodesToHide.forEach(node => {
-                      if (node.nodeType === Node.ELEMENT_NODE) {
-                          node.style.display = 'none';
-                          node.classList.add('secure-hidden-element');
-                      } else if (node.nodeType === Node.TEXT_NODE) {
-                          node._secureOriginalText = node.nodeValue;
-                          node.nodeValue = ''; 
-                      }
-                  });
-
-                  // 插入优雅的苹果风提示框
-                  let msgHtml = type === 'login' ? txt.mask_login : (!currentUser ? txt.mask_login_reply : txt.mask_reply);
-                  let icon = type === 'login' ? 'lock' : (!currentUser ? 'lock' : 'reply');
-                  let maskNode = renderMask(type, icon, msgHtml);
-                  startTagNode.parentNode.insertBefore(maskNode, startTagNode);
-
-                  // 精准消灭段落外边距（防止外层 P 标签留白）
-                  let startP = startTagNode.parentNode;
-                  if (startP && startP.nodeName === 'P') {
-                      startP.classList.add('secure-mask-wrapper-p');
-                  }
-              } else {
-                  // 解锁状态：呼叫外链护盾
-                  if (window.applyExternalLinkShield) {
-                      let nWalker = document.createTreeWalker(element, NodeFilter.SHOW_ELEMENT, null, false);
-                      nWalker.currentNode = startTagNode;
-                      while (nWalker.nextNode()) {
-                          if (nWalker.currentNode === endTagNode) break;
-                          if (!nWalker.currentNode.contains(endTagNode)) {
-                              window.applyExternalLinkShield(nWalker.currentNode);
-                          }
-                      }
-                  }
-              }
-
-              // 【兜底消除空行】如果有 P 标签已经被抽空，原地隐藏
-              let startP = startTagNode.parentNode;
-              if (startP && startP.nodeName === 'P' && startP.textContent.trim() === '') {
-                  startP.style.display = 'none';
-                  startP.classList.add('secure-hidden-element');
-              }
-              let endP = endTagNode.parentNode;
-              if (endP && endP.nodeName === 'P' && endP.textContent.trim() === '') {
-                  endP.style.display = 'none';
-                  endP.classList.add('secure-hidden-element');
-              }
+          if (type === "login") {
+            if (currentUser) isLocked = false; 
+            else { msgHtml = txt.mask_login; icon = "lock"; }
+          } else if (type === "reply") {
+            if (!currentUser) { msgHtml = txt.mask_login_reply; icon = "lock"; }
+            else if (hasReplied || currentUser.admin || currentUser.moderator || currentUser.id === helper?.getModel?.()?.user_id) isLocked = false;
+            else { msgHtml = txt.mask_reply; icon = "reply"; }
           }
-      });
+
+          if (isLocked) {
+              // 锁定状态：把原来里面的内容全部设为 display: none，插入面具
+              let maskNode = renderMask(type, icon, msgHtml);
+              
+              // 遍历子节点并隐藏，绝不使用 innerHTML 替换，保护 Glimmer
+              Array.from(el.childNodes).forEach(child => {
+                  if (child.nodeType === Node.ELEMENT_NODE) {
+                      child.style.display = 'none';
+                      child.classList.add('secure-hidden-element');
+                  } else if (child.nodeType === Node.TEXT_NODE) {
+                      // 包装一下文本节点
+                      let span = document.createElement('span');
+                      span.style.display = 'none';
+                      span.classList.add('secure-hidden-element');
+                      el.insertBefore(span, child);
+                      span.appendChild(child);
+                  }
+              });
+
+              el.prepend(maskNode);
+          } else {
+            // 解锁状态：直接移除外壳的隐藏属性
+            el.classList.remove("secure-wrapper");
+            el.classList.add("secure-unlocked");
+            if (window.applyExternalLinkShield) window.applyExternalLinkShield(el);
+          }
+        });
+      } catch (err) {
+        console.error("Secure Content Error:", err);
+      }
   }
 
+  // 最终挂载
   api.decorateCookedElement(
     (element, helper) => {
         applySecureContent(element, helper);
-        // 使用简易防抖替换，避免 Glimmer 重绘打断
-        let timer;
-        if (typeof MutationObserver !== "undefined") {
-            const observer = new MutationObserver(() => {
-                clearTimeout(timer);
-                timer = setTimeout(() => applySecureContent(element, helper), 100);
-            });
-            observer.observe(element, { childList: true, subtree: true });
-        }
     },
     { id: "secure-content-decorator" } 
   );
