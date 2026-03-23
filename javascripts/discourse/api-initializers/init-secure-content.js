@@ -40,7 +40,6 @@ export default apiInitializer("0.11", (api) => {
   }
 
   api.onToolbarCreate((toolbar) => {
-    // 恢复你的原始语法标签
     toolbar.addButton({
       id: "insert_login_tag",
       group: "insertions",
@@ -131,12 +130,11 @@ export default apiInitializer("0.11", (api) => {
           const endTag = `[/${type}]`;
 
           let safetyCounter = 0;
-          while (safetyCounter++ < 50) { // 防止死循环
+          while (safetyCounter++ < 50) { 
             let walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
             let startNode = null;
             let endNode = null;
 
-            // 1. 扫描出纯文本节点里的成对标签
             while (walker.nextNode()) {
               let text = walker.currentNode.nodeValue;
               if (!startNode && text.includes(startTag)) {
@@ -150,7 +148,7 @@ export default apiInitializer("0.11", (api) => {
 
             if (!startNode || !endNode) break;
 
-            // 2. 精确从原生节点中切出标记文本，绝不破坏其他 DOM
+            // 1. 精确切分出标签边界
             let startSplitIndex = startNode.nodeValue.indexOf(startTag);
             let afterStartNode = startNode.splitText(startSplitIndex);
             afterStartNode.nodeValue = afterStartNode.nodeValue.replace(startTag, ""); 
@@ -161,7 +159,7 @@ export default apiInitializer("0.11", (api) => {
             let afterEndNode = endNode.splitText(endSplitIndex);
             afterEndNode.nodeValue = afterEndNode.nodeValue.replace(endTag, "");
 
-            // 3. 权限判定
+            // 2. 权限判定
             let isLocked = true;
             let msgHtml = "";
             let icon = "lock";
@@ -175,11 +173,11 @@ export default apiInitializer("0.11", (api) => {
               else { msgHtml = txt.mask_reply; icon = "reply"; }
             }
 
-            // 4. 插入你的预览标牌 或 面具节点
+            // 3. 渲染并插入面具节点
             let maskNode = null;
             if (isPreview) {
                maskNode = document.createElement("div");
-               maskNode.className = "secure-preview-badge"; // 使用你原有的 CSS 类！
+               maskNode.className = "secure-preview-badge"; 
                maskNode.textContent = txt.preview;
             } else if (isLocked) {
                maskNode = renderMask(type, icon, msgHtml);
@@ -187,9 +185,21 @@ export default apiInitializer("0.11", (api) => {
 
             if (maskNode) {
                afterStartNode.parentNode.insertBefore(maskNode, afterStartNode);
+               // 如果这个 P 标签里只有面具（原标签被删了），强行干掉它的自带间距
+               let p = maskNode.parentNode;
+               if (p && p.tagName === 'P') {
+                   let hasRealContent = Array.from(p.childNodes).some(child => {
+                        if (child === maskNode) return false;
+                        if (child.classList && child.classList.contains('secure-hidden-element')) return false;
+                        if (child.nodeType === Node.ELEMENT_NODE && child.tagName !== 'BR') return true;
+                        if (child.nodeType === Node.TEXT_NODE && child.nodeValue.trim() !== "") return true;
+                        return false;
+                   });
+                   if (!hasRealContent) p.classList.add('secure-mask-wrapper-p');
+               }
             }
 
-            // 5. 将包裹区间内的所有结构静默隐藏（不破坏绑定的 Glimmer）
+            // 4. 将包裹区间内的所有结构静默隐藏（保持 Glimmer 完整）
             if (isLocked && !isPreview) {
                 let nodesToHide = [];
                 if (afterStartNode === endNode) {
@@ -223,7 +233,6 @@ export default apiInitializer("0.11", (api) => {
                     }
                 }
 
-                // 去除冗余的嵌套子节点，只隐藏顶层 DOM
                 let topLevelNodes = nodesToHide.filter(n => {
                     let p = n.parentNode;
                     while (p) {
@@ -235,11 +244,9 @@ export default apiInitializer("0.11", (api) => {
 
                 topLevelNodes.forEach(n => {
                     if (n.nodeType === Node.ELEMENT_NODE) {
-                        n.style.display = 'none';
-                        n.classList.add('secure-hidden-element');
+                        n.classList.add('secure-hidden-element'); // 隐藏包括里面的图片、换行、外部链接等
                     } else if (n.nodeType === Node.TEXT_NODE && n.nodeValue.trim() !== "") {
                         let span = document.createElement('span');
-                        span.style.display = 'none';
                         span.classList.add('secure-hidden-element');
                         n.parentNode.insertBefore(span, n);
                         span.appendChild(n);
@@ -248,6 +255,43 @@ export default apiInitializer("0.11", (api) => {
             } else {
                safeApplyLinkShield(element);
             }
+
+            // 5. 【强力除草机】清理标签移除后产生的“幽灵空行”与空壳 <p>
+            function cleanupWhitespace(node) {
+                if (!node) return;
+                
+                // 如果文字节点空了，清理它旁边失去依靠的 <br> 换行
+                if (node.nodeValue.trim() === "") {
+                    if (node.nextSibling && node.nextSibling.tagName === 'BR') {
+                        node.nextSibling.classList.add('secure-hidden-element');
+                    } else if (node.previousSibling && node.previousSibling.tagName === 'BR') {
+                        node.previousSibling.classList.add('secure-hidden-element');
+                    }
+                }
+
+                // 检查父 P 标签是否变成了空壳
+                let p = node.parentNode;
+                if (p && p.tagName === 'P') {
+                    let hasContent = Array.from(p.childNodes).some(child => {
+                        // 隐藏物不算内容
+                        if (child.classList && child.classList.contains('secure-hidden-element')) return false;
+                        // 面具和徽章算有效内容（保留 P，靠上面的 secure-mask-wrapper-p 消灭 margin）
+                        if (child.classList && (child.classList.contains('secure-content-mask') || child.classList.contains('secure-preview-badge'))) return true;
+                        // 其他真实存在的元素（除 br 外）或非空文本算内容
+                        if (child.nodeType === Node.ELEMENT_NODE && child.tagName !== 'BR') return true;
+                        if (child.nodeType === Node.TEXT_NODE && child.nodeValue.trim() !== "") return true;
+                        return false;
+                    });
+                    
+                    // 如果啥都不剩了（比如解锁后的 [reply] 单独占一行），彻底隐藏这个 P 标签！
+                    if (!hasContent) {
+                        p.classList.add('secure-hidden-element');
+                    }
+                }
+            }
+
+            cleanupWhitespace(afterStartNode);
+            cleanupWhitespace(afterEndNode);
           }
         });
       } catch (err) {
@@ -255,12 +299,10 @@ export default apiInitializer("0.11", (api) => {
       }
   }
 
-  // 挂载点
   api.decorateCookedElement(
     (element, helper) => {
         applySecureContent(element, helper);
 
-        // 【大杀器】挂载 MutationObserver：专门捕捉像 Callout 这样延迟/异步渲染的 Glimmer 框架组件
         const observer = new MutationObserver((mutations) => {
             let shouldProcess = false;
             for (let m of mutations) {
@@ -274,7 +316,7 @@ export default apiInitializer("0.11", (api) => {
                 }
                 if (shouldProcess) break;
             }
-            if (shouldProcess) applySecureContent(element, helper); // 一旦异步内容渲染完毕，立即回马枪重新上锁！
+            if (shouldProcess) applySecureContent(element, helper); 
         });
         observer.observe(element, { childList: true, subtree: true });
     },
