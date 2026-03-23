@@ -29,9 +29,6 @@ export default apiInitializer("0.11", (api) => {
     }
   }[lang];
 
-  // ==========================================
-  // 1. 国际化与编辑器按钮
-  // ==========================================
   if (window.I18n && window.I18n.translations && window.I18n.translations[locale]) {
       let trans = window.I18n.translations[locale];
       trans.js = trans.js || {};
@@ -43,7 +40,7 @@ export default apiInitializer("0.11", (api) => {
   }
 
   api.onToolbarCreate((toolbar) => {
-    // 恢复你原本的语法，保障历史兼容性！
+    // 恢复你的原始语法标签
     toolbar.addButton({
       id: "insert_login_tag",
       group: "insertions",
@@ -60,9 +57,6 @@ export default apiInitializer("0.11", (api) => {
     });
   });
 
-  // ==========================================
-  // 2. 权限校验逻辑 (不受千人限制的终极方案)
-  // ==========================================
   const replyStatusCache = new Map();
   async function checkUserReplied(user, topicId) {
     if (!user || !topicId) return false;
@@ -75,7 +69,6 @@ export default apiInitializer("0.11", (api) => {
         replyStatusCache.set(key, true); return true;
     }
     try {
-      // 依赖全局搜索接口精准判定，哪怕帖子有上万人回复也不会漏判
       const searchQuery = `topic:${topicId} @${user.username}`;
       const result = await ajax(`/search/query.json`, { data: { q: searchQuery } });
       let hasPost = (result && result.posts && result.posts.length > 0);
@@ -105,149 +98,22 @@ export default apiInitializer("0.11", (api) => {
       return maskNode;
   }
 
-  // ==========================================
-  // 3. 原生 DOM 边界解析引擎 (无损摘取，不破坏 Glimmer)
-  // ==========================================
-  function parseTagsToWrapper(element, type) {
-    const startTag = `[${type}]`;
-    const endTag = `[/${type}]`;
-
-    // 防止极端异常 DOM 结构导致死循环，最大解析层级 100
-    let iterations = 0;
-    while (iterations++ < 100) {
-      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
-        acceptNode: function(node) {
-          // 跳过代码块和已经被我们处理过的安全框
-          if (node.parentNode && node.parentNode.closest && node.parentNode.closest('pre, code, .secure-wrapper')) {
-            return NodeFilter.FILTER_REJECT;
-          }
-          return NodeFilter.FILTER_ACCEPT;
-        }
-      }, false);
-
-      let node;
-      let startNode = null;
-      let endNode = null;
-
-      while ((node = walker.nextNode())) {
-        let lowerVal = node.nodeValue.toLowerCase();
-        if (!startNode && lowerVal.includes(startTag)) startNode = node;
-        if (startNode && lowerVal.includes(endTag)) { endNode = node; break; }
-      }
-
-      // 没成对出现，终止解析
-      if (!startNode || !endNode) break;
-
-      // 如果标签挤在同一个文本节点里
-      if (startNode === endNode) {
-        let text = startNode.nodeValue;
-        let startMatch = text.match(new RegExp(`\\[${type}\\]`, 'i'));
-        let endMatch = text.match(new RegExp(`\\[\\/${type}\\]`, 'i'));
-        
-        let startIndex = startMatch.index;
-        let endIndex = endMatch.index;
-        if (endIndex < startIndex) break;
-
-        let beforeText = text.substring(0, startIndex);
-        let contentText = text.substring(startIndex + startTag.length, endIndex);
-        let afterText = text.substring(endIndex + endTag.length);
-
-        let wrapper = document.createElement("div");
-        wrapper.className = "secure-wrapper";
-        wrapper.dataset.secureType = type;
-        wrapper.appendChild(document.createTextNode(contentText));
-
-        let parent = startNode.parentNode;
-        if (beforeText) parent.insertBefore(document.createTextNode(beforeText), startNode);
-        parent.insertBefore(wrapper, startNode);
-        if (afterText) parent.insertBefore(document.createTextNode(afterText), startNode);
-        parent.removeChild(startNode);
-      } else {
-        // 标签横跨了不同的节点（如存在换行、图片插入等）
-        let startText = startNode.nodeValue;
-        let startMatch = startText.match(new RegExp(`\\[${type}\\]`, 'i'));
-        let startIndex = startMatch.index;
-        
-        let beforeStart = document.createTextNode(startText.substring(0, startIndex));
-        let afterStart = document.createTextNode(startText.substring(startIndex + startTag.length));
-        
-        let parentStart = startNode.parentNode;
-        parentStart.insertBefore(beforeStart, startNode);
-        parentStart.insertBefore(afterStart, startNode);
-        parentStart.removeChild(startNode);
-
-        let endText = endNode.nodeValue;
-        let endMatch = endText.match(new RegExp(`\\[\\/${type}\\]`, 'i'));
-        let endIndex = endMatch.index;
-        
-        let beforeEnd = document.createTextNode(endText.substring(0, endIndex));
-        let afterEnd = document.createTextNode(endText.substring(endIndex + endTag.length));
-        
-        let parentEnd = endNode.parentNode;
-        parentEnd.insertBefore(beforeEnd, endNode);
-        parentEnd.insertBefore(afterEnd, endNode);
-        parentEnd.removeChild(endNode);
-
-        // 核心魔法：选中标签中间的所有 DOM 结构，无损提取
-        let range = document.createRange();
-        range.setStartBefore(afterStart);
-        range.setEndAfter(beforeEnd);
-
-        let wrapper = document.createElement("div");
-        wrapper.className = "secure-wrapper";
-        wrapper.dataset.secureType = type;
-
-        try {
-          let fragment = range.extractContents();
-          wrapper.appendChild(fragment);
-          range.insertNode(wrapper);
-        } catch (e) {
-          console.warn("[Secure Content] DOM结构过于复杂无法安全切割:", e);
-          parentStart.insertBefore(wrapper, afterStart);
-          break; 
-        }
-      }
-    }
-  }
-
-  // ==========================================
-  // 4. 防御性注入外链护盾
-  // ==========================================
   function safeApplyLinkShield(targetNode) {
     if (typeof window.applyExternalLinkShield === 'function') {
       try {
         setTimeout(() => window.applyExternalLinkShield(targetNode), 50);
       } catch (err) {
-        console.warn("[Secure Content] 外链护盾执行异常，已风险隔离:", err);
+        console.warn("[Secure Content] 外链护盾执行异常:", err);
       }
     }
   }
 
-  // ==========================================
-  // 5. 状态切换核心逻辑
-  // ==========================================
   async function applySecureContent(element, helper) {
       try {
-        // 第一步：先将纯文本的 [login]/[reply] 安全转化为 DOM wrapper
-        parseTagsToWrapper(element, "login");
-        parseTagsToWrapper(element, "reply");
-
-        // 第二步：执行你原有的逻辑
-        const secureElements = element.querySelectorAll(".secure-wrapper:not(.processed)");
-        if (!secureElements.length) return;
-        
-        secureElements.forEach(el => el.classList.add("processed"));
+        const contentText = element.textContent;
+        if (!contentText || (!contentText.includes("[login]") && !contentText.includes("[reply]"))) return;
 
         const isPreview = element.classList.contains("d-editor-preview") || element.closest(".d-editor-preview");
-        if (isPreview) {
-          secureElements.forEach(el => {
-              el.classList.remove("secure-wrapper");
-              el.classList.add("secure-preview");
-              el.setAttribute("data-preview-prefix", txt.preview);
-          });
-          safeApplyLinkShield(element);
-          return; 
-        }
 
         let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.topic?.id || helper?.getModel?.()?.id;
         if (!topicId) {
@@ -256,47 +122,132 @@ export default apiInitializer("0.11", (api) => {
         }
 
         let hasReplied = false;
-        const needsReplyCheck = Array.from(secureElements).some(el => el.dataset.secureType === "reply");
-        if (needsReplyCheck && currentUser && topicId) {
+        if (contentText.includes("[reply]") && currentUser && topicId) {
            hasReplied = await checkUserReplied(currentUser, topicId);
         }
 
-        secureElements.forEach((el) => {
-          const type = el.dataset.secureType;
-          let isLocked = true;
-          let msgHtml = "";
-          let icon = "lock";
+        ["login", "reply"].forEach(type => {
+          const startTag = `[${type}]`;
+          const endTag = `[/${type}]`;
 
-          if (type === "login") {
-            if (currentUser) isLocked = false; 
-            else { msgHtml = txt.mask_login; icon = "lock"; }
-          } else if (type === "reply") {
-            if (!currentUser) { msgHtml = txt.mask_login_reply; icon = "lock"; }
-            else if (hasReplied || currentUser.admin || currentUser.moderator || currentUser.id === helper?.getModel?.()?.user_id) isLocked = false;
-            else { msgHtml = txt.mask_reply; icon = "reply"; }
-          }
+          let safetyCounter = 0;
+          while (safetyCounter++ < 50) { // 防止死循环
+            let walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
+            let startNode = null;
+            let endNode = null;
 
-          if (isLocked) {
-              let maskNode = renderMask(type, icon, msgHtml);
-              
-              Array.from(el.childNodes).forEach(child => {
-                  if (child.nodeType === Node.ELEMENT_NODE) {
-                      child.style.display = 'none';
-                      child.classList.add('secure-hidden-element');
-                  } else if (child.nodeType === Node.TEXT_NODE) {
-                      let span = document.createElement('span');
-                      span.style.display = 'none';
-                      span.classList.add('secure-hidden-element');
-                      el.insertBefore(span, child);
-                      span.appendChild(child);
-                  }
-              });
+            // 1. 扫描出纯文本节点里的成对标签
+            while (walker.nextNode()) {
+              let text = walker.currentNode.nodeValue;
+              if (!startNode && text.includes(startTag)) {
+                startNode = walker.currentNode;
+              }
+              if (startNode && walker.currentNode.nodeValue.includes(endTag)) {
+                endNode = walker.currentNode;
+                break;
+              }
+            }
 
-              el.prepend(maskNode);
-          } else {
-            el.classList.remove("secure-wrapper");
-            el.classList.add("secure-unlocked");
-            safeApplyLinkShield(el);
+            if (!startNode || !endNode) break;
+
+            // 2. 精确从原生节点中切出标记文本，绝不破坏其他 DOM
+            let startSplitIndex = startNode.nodeValue.indexOf(startTag);
+            let afterStartNode = startNode.splitText(startSplitIndex);
+            afterStartNode.nodeValue = afterStartNode.nodeValue.replace(startTag, ""); 
+
+            if (endNode === startNode) endNode = afterStartNode;
+
+            let endSplitIndex = endNode.nodeValue.indexOf(endTag);
+            let afterEndNode = endNode.splitText(endSplitIndex);
+            afterEndNode.nodeValue = afterEndNode.nodeValue.replace(endTag, "");
+
+            // 3. 权限判定
+            let isLocked = true;
+            let msgHtml = "";
+            let icon = "lock";
+
+            if (type === "login") {
+              if (currentUser) isLocked = false; 
+              else { msgHtml = txt.mask_login; icon = "lock"; }
+            } else if (type === "reply") {
+              if (!currentUser) { msgHtml = txt.mask_login_reply; icon = "lock"; }
+              else if (hasReplied || currentUser.admin || currentUser.moderator || currentUser.id === helper?.getModel?.()?.user_id) isLocked = false;
+              else { msgHtml = txt.mask_reply; icon = "reply"; }
+            }
+
+            // 4. 插入你的预览标牌 或 面具节点
+            let maskNode = null;
+            if (isPreview) {
+               maskNode = document.createElement("div");
+               maskNode.className = "secure-preview-badge"; // 使用你原有的 CSS 类！
+               maskNode.textContent = txt.preview;
+            } else if (isLocked) {
+               maskNode = renderMask(type, icon, msgHtml);
+            }
+
+            if (maskNode) {
+               afterStartNode.parentNode.insertBefore(maskNode, afterStartNode);
+            }
+
+            // 5. 将包裹区间内的所有结构静默隐藏（不破坏绑定的 Glimmer）
+            if (isLocked && !isPreview) {
+                let nodesToHide = [];
+                if (afterStartNode === endNode) {
+                    nodesToHide.push(endNode);
+                } else {
+                    let range = document.createRange();
+                    range.setStartAfter(afterStartNode);
+                    range.setEndBefore(endNode);
+                    
+                    let container = range.commonAncestorContainer;
+                    if (container.nodeType === Node.TEXT_NODE) {
+                        nodesToHide.push(endNode);
+                    } else {
+                        let hideWalker = document.createTreeWalker(container, NodeFilter.SHOW_ALL, null, false);
+                        let inRange = false;
+                        
+                        while (hideWalker.nextNode()) {
+                            let node = hideWalker.currentNode;
+                            if (node === afterStartNode) {
+                                inRange = true; continue;
+                            }
+                            if (node === endNode) {
+                                nodesToHide.push(endNode); break;
+                            }
+                            if (inRange && !node.contains(endNode)) {
+                                if (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.TEXT_NODE) {
+                                    nodesToHide.push(node);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 去除冗余的嵌套子节点，只隐藏顶层 DOM
+                let topLevelNodes = nodesToHide.filter(n => {
+                    let p = n.parentNode;
+                    while (p) {
+                        if (nodesToHide.includes(p)) return false;
+                        p = p.parentNode;
+                    }
+                    return true;
+                });
+
+                topLevelNodes.forEach(n => {
+                    if (n.nodeType === Node.ELEMENT_NODE) {
+                        n.style.display = 'none';
+                        n.classList.add('secure-hidden-element');
+                    } else if (n.nodeType === Node.TEXT_NODE && n.nodeValue.trim() !== "") {
+                        let span = document.createElement('span');
+                        span.style.display = 'none';
+                        span.classList.add('secure-hidden-element');
+                        n.parentNode.insertBefore(span, n);
+                        span.appendChild(n);
+                    }
+                });
+            } else {
+               safeApplyLinkShield(element);
+            }
           }
         });
       } catch (err) {
@@ -304,10 +255,28 @@ export default apiInitializer("0.11", (api) => {
       }
   }
 
-  // 最终挂载
+  // 挂载点
   api.decorateCookedElement(
     (element, helper) => {
         applySecureContent(element, helper);
+
+        // 【大杀器】挂载 MutationObserver：专门捕捉像 Callout 这样延迟/异步渲染的 Glimmer 框架组件
+        const observer = new MutationObserver((mutations) => {
+            let shouldProcess = false;
+            for (let m of mutations) {
+                for (let i = 0; i < m.addedNodes.length; i++) {
+                    let node = m.addedNodes[i];
+                    if (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.TEXT_NODE) {
+                        if (node.textContent && (node.textContent.includes("[login]") || node.textContent.includes("[reply]"))) {
+                            shouldProcess = true; break;
+                        }
+                    }
+                }
+                if (shouldProcess) break;
+            }
+            if (shouldProcess) applySecureContent(element, helper); // 一旦异步内容渲染完毕，立即回马枪重新上锁！
+        });
+        observer.observe(element, { childList: true, subtree: true });
     },
     { id: "secure-content-decorator" } 
   );
