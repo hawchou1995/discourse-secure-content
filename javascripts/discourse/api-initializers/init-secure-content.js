@@ -60,26 +60,38 @@ export default apiInitializer("0.11", (api) => {
   });
 
   // ==========================================
-  // 2. 权限校验逻辑
+  // 2. 权限校验逻辑 (【核心优化】修复千人帖子的漏判Bug)
   // ==========================================
   const replyStatusCache = new Map();
-  async function checkUserReplied(userId, topicId) {
-    const key = `${userId}:${topicId}`;
+  async function checkUserReplied(user, topicId) {
+    if (!user || !topicId) return false;
+    const key = `${user.id}:${topicId}`;
+    
+    // 1. 命中缓存
     if (replyStatusCache.has(key)) return replyStatusCache.get(key);
-    if (currentUser && currentUser.post_count === 0) {
+    
+    // 2. 快速判断：如果用户总发帖数为0，肯定没回复过
+    if (user.post_count === 0) {
         replyStatusCache.set(key, false); return false;
     }
-    // 快速检查当前页面有没有这个用户的帖子
-    if (document.querySelector(`article[data-user-id="${userId}"]`)) {
+    
+    // 3. O(1) 前端判断：快速检查当前 DOM 中有没有该用户的楼层
+    if (document.querySelector(`article[data-user-id="${user.id}"]`)) {
         replyStatusCache.set(key, true); return true;
     }
-    // 降级：发 API 请求
+    
+    // 4. 终极防御：利用 Search API 精确查找（不受 participants 24人上限影响）
     try {
-      const result = await ajax(`/t/${topicId}.json`);
-      let hasPost = result.details?.user_data?.posted || result.details?.participants?.some(p => p.id === userId) || false;
+      // 语法糖: topic:1234 @username
+      const searchQuery = `topic:${topicId} @${user.username}`;
+      const result = await ajax(`/search/query.json`, { data: { q: searchQuery } });
+      let hasPost = (result && result.posts && result.posts.length > 0);
       replyStatusCache.set(key, hasPost);
       return hasPost;
-    } catch (e) { return false; }
+    } catch (e) { 
+      console.warn("[Secure Content] Reply check failed:", e);
+      return false; 
+    }
   }
 
   function renderMask(type, icon, msgHtml) {
@@ -104,17 +116,13 @@ export default apiInitializer("0.11", (api) => {
   }
 
   // ==========================================
-  // 3. 【核心优化】接管 Markdown 渲染，不再做恶心的 DOM 字符串替换！
+  // 3. Markdown 渲染劫持
   // ==========================================
-  
-  // 注册一个 Markdown 块级规则
   api.registerMarkdownItPlugin("secure-content", (md) => {
-    // 编写自定义规则来处理 [login] 和 [reply] 标签
     const secureContentRule = (state, startLine, endLine, silent) => {
       let start = state.bMarks[startLine] + state.tShift[startLine];
       let max = state.eMarks[startLine];
 
-      // 如果不是以 '[' 开头，直接跳过
       if (state.src.charCodeAt(start) !== 0x5b /* [ */) return false;
 
       let tagMatch = state.src.slice(start, max).match(/^\[(login|reply)\]/i);
@@ -123,7 +131,6 @@ export default apiInitializer("0.11", (api) => {
       let type = tagMatch[1].toLowerCase();
       let closeTag = `[/${type}]`;
 
-      // 寻找结束标签
       let nextLine = startLine;
       let foundClose = false;
       
@@ -143,31 +150,40 @@ export default apiInitializer("0.11", (api) => {
       if (!foundClose) return false;
       if (silent) return true;
 
-      // 生成安全的 Token 树
       let token;
-      
-      // 开启一个 div，给它打上我们自己的属性
       token = state.push("secure_content_open", "div", 1);
       token.attrs = [["class", "secure-wrapper"], ["data-secure-type", type]];
       token.map = [startLine, nextLine];
 
-      // 将中间的内容交给 Markdown 继续递归解析
       state.md.block.tokenize(state, startLine + 1, nextLine);
 
-      // 关闭 div
       token = state.push("secure_content_close", "div", -1);
 
       state.line = nextLine + 1;
       return true;
     };
 
-    // 把规则插入到 Markdown 解析流中，优先级高于段落
     md.block.ruler.before("paragraph", "secure_content", secureContentRule);
   });
 
+  // ==========================================
+  // 4. 防御性注入辅助函数 (隔离外链护盾组件的崩溃风险)
+  // ==========================================
+  function safeApplyLinkShield(targetNode) {
+    if (typeof window.applyExternalLinkShield === 'function') {
+      try {
+        // 使用 setTimeout 确保浏览器完成解锁内容的 DOM 渲染后，再绑定护盾事件
+        setTimeout(() => {
+            window.applyExternalLinkShield(targetNode);
+        }, 50);
+      } catch (err) {
+        console.warn("[Secure Content] 外链护盾执行异常，已风险隔离:", err);
+      }
+    }
+  }
 
   // ==========================================
-  // 4. 只负责状态切换，不动 DOM 结构！
+  // 5. 状态切换核心逻辑
   // ==========================================
   async function applySecureContent(element, helper) {
       try {
@@ -186,7 +202,8 @@ export default apiInitializer("0.11", (api) => {
               el.classList.add("secure-preview");
               el.setAttribute("data-preview-prefix", txt.preview);
           });
-          if (window.applyExternalLinkShield) window.applyExternalLinkShield(element);
+          // 预览区解禁时应用护盾
+          safeApplyLinkShield(element);
           return; 
         }
 
@@ -200,7 +217,8 @@ export default apiInitializer("0.11", (api) => {
         let hasReplied = false;
         const needsReplyCheck = Array.from(secureElements).some(el => el.dataset.secureType === "reply");
         if (needsReplyCheck && currentUser && topicId) {
-           hasReplied = await checkUserReplied(currentUser.id, topicId);
+           // 传入整个 currentUser 对象，以便同时获取 ID 和 Username
+           hasReplied = await checkUserReplied(currentUser, topicId);
         }
 
         secureElements.forEach((el) => {
@@ -219,16 +237,13 @@ export default apiInitializer("0.11", (api) => {
           }
 
           if (isLocked) {
-              // 锁定状态：把原来里面的内容全部设为 display: none，插入面具
               let maskNode = renderMask(type, icon, msgHtml);
               
-              // 遍历子节点并隐藏，绝不使用 innerHTML 替换，保护 Glimmer
               Array.from(el.childNodes).forEach(child => {
                   if (child.nodeType === Node.ELEMENT_NODE) {
                       child.style.display = 'none';
                       child.classList.add('secure-hidden-element');
                   } else if (child.nodeType === Node.TEXT_NODE) {
-                      // 包装一下文本节点
                       let span = document.createElement('span');
                       span.style.display = 'none';
                       span.classList.add('secure-hidden-element');
@@ -239,10 +254,12 @@ export default apiInitializer("0.11", (api) => {
 
               el.prepend(maskNode);
           } else {
-            // 解锁状态：直接移除外壳的隐藏属性
+            // 解锁状态：展示内容
             el.classList.remove("secure-wrapper");
             el.classList.add("secure-unlocked");
-            if (window.applyExternalLinkShield) window.applyExternalLinkShield(el);
+            
+            // 真实贴文区域解禁时应用安全护盾
+            safeApplyLinkShield(el);
           }
         });
       } catch (err) {
