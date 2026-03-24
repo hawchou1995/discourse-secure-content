@@ -128,100 +128,70 @@ export default apiInitializer("0.11", (api) => {
     }
   }
 
-  // 【核心机制：气凝胶压缩算法】自底向上的精准裁切，100%不碰组件内核
-  function cleanupSpacing(root) {
-      if (!root || !root.querySelectorAll) return;
-      const selectors = ['p', '.callout-content', '.callout', '.d-quote-callout', 'blockquote', 'div'];
-      const containers = root.querySelectorAll(selectors.join(', '));
-      const arr = Array.from(containers).reverse();
-      
-      arr.forEach(el => {
-          if (el.classList.contains('secure-content-mask') || el.classList.contains('secure-icon-container')) return;
+  // 【核心黑科技】靶向清理因锁定产生的多余留白（段落、换行、多级Callout框架）
+  function cleanupSpacingForMask(maskNode, block) {
+      let parent = maskNode.parentNode;
+      block.modifiedParents = [];
+      block.hiddenBrs = [];
 
-          let hasVisible = false;
-          let hasMask = false;
-
-          el.childNodes.forEach(child => {
-              if (child.nodeType === Node.TEXT_NODE) {
-                  // 如果文本不是纯空白或零宽字符，算作可见内容
-                  if (child.nodeValue.replace(/[\u200B-\u200D\uFEFF\s]/g, '') !== "") {
-                      hasVisible = true;
+      while (parent && parent.nodeType === Node.ELEMENT_NODE && parent !== document.body) {
+          if (parent.tagName === 'P' || parent.classList.contains('callout-content') || parent.classList.contains('callout') || parent.tagName === 'BLOCKQUOTE') {
+              let hasVisible = Array.from(parent.childNodes).some(child => {
+                  if (child.nodeType === Node.TEXT_NODE) {
+                      return child.nodeValue.replace(/[\u200B-\u200D\uFEFF\s]/g, '') !== "";
+                  } else if (child.nodeType === Node.ELEMENT_NODE) {
+                      if (child.style.display === 'none') return false;
+                      if (child.classList.contains('secure-content-mask')) return false;
+                      if (child.classList.contains('secure-preview-badge')) return false;
+                      if (child.classList.contains('callout-title')) return false; 
+                      if (child.tagName === 'BR') return false; 
+                      return true;
                   }
-              } else if (child.nodeType === Node.ELEMENT_NODE) {
-                  if (child.style.display === 'none') return; 
-                  if (child.classList.contains('secure-empty-p')) return;
+                  return false;
+              });
 
-                  // 如果子节点是我们上的面具，或者内层已经被判定为仅存面具的壳子
-                  if (child.classList.contains('secure-content-mask') || 
-                      child.classList.contains('secure-preview-badge') || 
-                      child.classList.contains('secure-mask-p')) {
-                      hasMask = true;
-                  } else if (child.tagName !== 'BR' && 
-                             !child.classList.contains('callout-title') && 
-                             !child.classList.contains('callout-icon') && 
-                             !child.classList.contains('callout-fold') &&
-                             !child.classList.contains('secure-hidden-element')) {
-                      // 排除掉不影响实际内容的骨架元素，判定是否存在真实的展示内容
-                      hasVisible = true;
-                  }
-              }
-          });
-
-          // 如果容器内部没有真实内容了
-          if (!hasVisible) {
-              if (hasMask) {
-                  // 情况 A：只剩面具。直接抽掉这个壳子的 padding 和 margin，让它向内坍缩包裹住面具
-                  el.classList.add('secure-mask-p');
-                  el.dataset.origMargin = el.style.margin || '';
-                  el.dataset.origPadding = el.style.padding || '';
-                  el.style.setProperty('margin', '0', 'important');
-                  el.style.setProperty('padding', '0', 'important');
+              if (!hasVisible) {
+                  block.modifiedParents.push({
+                      el: parent,
+                      origMargin: parent.style.margin || '',
+                      origPadding: parent.style.padding || ''
+                  });
+                  parent.classList.add('secure-mask-p');
+                  parent.style.setProperty('margin', '0', 'important');
+                  parent.style.setProperty('padding', '0', 'important');
                   
-                  // 顺手消灭多余的回车符
-                  el.childNodes.forEach(child => {
-                      if (child.tagName === 'BR' && !child.classList.contains('secure-hidden-element')) {
-                          child.classList.add('secure-hidden-element', 'secure-br-hidden');
-                          child.dataset.origDisplay = child.style.display || '';
+                  Array.from(parent.childNodes).forEach(child => {
+                      if (child.tagName === 'BR' && child.style.display !== 'none') {
+                          block.hiddenBrs.push({
+                              el: child,
+                              origDisplay: child.style.display || ''
+                          });
                           child.style.setProperty('display', 'none', 'important');
                       }
                   });
-              } else {
-                  // 情况 B：彻底空了，连面具也没有。直接隐身。
-                  el.classList.add('secure-empty-p');
-                  el.dataset.origDisplay = el.style.display || '';
-                  el.style.setProperty('display', 'none', 'important');
               }
           }
-      });
-  }
-
-  function restoreSpacing(root) {
-      if (!root || !root.querySelectorAll) return;
-      root.querySelectorAll('.secure-mask-p').forEach(p => {
-          p.classList.remove('secure-mask-p');
-          p.style.margin = p.dataset.origMargin || '';
-          p.style.padding = p.dataset.origPadding || '';
-          if (p.style.length === 0) p.removeAttribute('style');
-          
-          p.childNodes.forEach(child => {
-              if (child.nodeType === Node.ELEMENT_NODE && child.classList.contains('secure-br-hidden')) {
-                  child.classList.remove('secure-hidden-element', 'secure-br-hidden');
-                  child.style.display = child.dataset.origDisplay || '';
-                  if (child.style.length === 0) child.removeAttribute('style');
-              }
-          });
-      });
-      root.querySelectorAll('.secure-empty-p').forEach(p => {
-          p.classList.remove('secure-empty-p');
-          p.style.display = p.dataset.origDisplay || '';
-          if (p.style.length === 0) p.removeAttribute('style');
-      });
+          parent = parent.parentNode;
+      }
   }
 
   async function applySecureContent(element, helper) {
       try {
+        if (!element.textContent.includes('[login]') && !element.textContent.includes('[reply]')) return;
+
         const isPreview = element.classList.contains("d-editor-preview") || element.closest(".d-editor-preview");
         let lockedBlocks = [];
+
+        let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.topic?.id || helper?.getModel?.()?.id;
+        if (!topicId) {
+            const match = window.location.pathname.match(/\/t\/[^\/]+\/(\d+)/);
+            if (match) topicId = match[1];
+        }
+
+        let hasReplied = false;
+        if (currentUser && topicId && element.textContent.includes('[reply]')) {
+            hasReplied = await checkUserReplied(currentUser, topicId);
+        }
 
         ["login", "reply"].forEach(type => {
           const startTag = `[${type}]`;
@@ -243,6 +213,19 @@ export default apiInitializer("0.11", (api) => {
             }
 
             if (!startNode || !endNode) break;
+
+            let isLocked = true;
+            let msgHtml = "";
+            let icon = "lock";
+
+            if (type === "login") {
+                if (currentUser) isLocked = false; 
+                else { msgHtml = txt.mask_login; icon = "lock"; }
+            } else if (type === "reply") {
+                if (!currentUser) { msgHtml = txt.mask_login_reply; icon = "lock"; }
+                else if (hasReplied || currentUser.admin || currentUser.moderator || currentUser.id === helper?.getModel?.()?.user_id) isLocked = false;
+                else { msgHtml = txt.mask_reply; icon = "reply"; }
+            }
 
             let startSplitIndex = startNode.nodeValue.indexOf(startTag);
             let afterStartNode = startNode.splitText(startSplitIndex);
@@ -271,12 +254,18 @@ export default apiInitializer("0.11", (api) => {
                     
                     while (hideWalker.nextNode()) {
                         let node = hideWalker.currentNode;
-                        if (node === afterStartNode) { inRange = true; continue; }
-                        if (node === endNode) { nodesToHide.push(endNode); break; }
+                        // 致命修正：必须把包含紧贴标签的换行节点也囊括进隐藏范围！
+                        if (node === afterStartNode) { 
+                            inRange = true; 
+                            nodesToHide.push(node);
+                            continue; 
+                        }
+                        if (node === endNode) { 
+                            nodesToHide.push(node); 
+                            break; 
+                        }
                         if (inRange && !node.contains(endNode)) {
-                            if (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.TEXT_NODE) {
-                                nodesToHide.push(node);
-                            }
+                            nodesToHide.push(node);
                         }
                     }
                 }
@@ -291,7 +280,6 @@ export default apiInitializer("0.11", (api) => {
                 return true;
             });
 
-            let hiddenTextNodes = [];
             let maskNode = null;
 
             if (isPreview) {
@@ -299,95 +287,70 @@ export default apiInitializer("0.11", (api) => {
                 maskNode.className = "secure-preview-badge"; 
                 maskNode.textContent = txt.preview;
                 afterStartNode.parentNode.insertBefore(maskNode, afterStartNode);
-            } else {
-                // 【绝版防护】：不重构 DOM 结构！不插 <span>！只做 CSS 级硬隐身和文本抽空
+            } else if (isLocked) {
+                maskNode = renderMask(type, icon, msgHtml);
+                afterStartNode.parentNode.insertBefore(maskNode, afterStartNode);
+
                 topLevelNodes.forEach(n => {
                     if (n.nodeType === Node.ELEMENT_NODE) {
+                        if (n.dataset.secureOrigDisplay === undefined) {
+                            n.dataset.secureOrigDisplay = n.style.display || '';
+                        }
                         n.classList.add('secure-hidden-element');
-                        n.dataset.secureOrigDisplay = n.style.display || '';
                         n.style.setProperty('display', 'none', 'important');
-                    } else if (n.nodeType === Node.TEXT_NODE && n.nodeValue.replace(/[\u200B-\u200D\uFEFF\s]/g, '') !== "") {
-                        // 悄悄存下这行文本
-                        hiddenTextNodes.push({ textNode: n, origText: n.nodeValue });
-                        // 抽干内容，Glimmer 看不出破绽！
-                        n.nodeValue = ""; 
+                    } else if (n.nodeType === Node.TEXT_NODE) {
+                        // 零侵入 DOM 隐藏法，防止 Glimmer 报错
+                        if (n.originalText === undefined) {
+                            n.originalText = n.nodeValue;
+                        }
+                        n.nodeValue = "";
                     }
                 });
-
-                maskNode = renderMask(type, "lock", txt["mask_" + type]); 
-                afterStartNode.parentNode.insertBefore(maskNode, afterStartNode);
             }
 
             lockedBlocks.push({
-                type,
-                topLevelNodes,
-                hiddenTextNodes,
+                isLocked: isLocked && !isPreview,
                 maskNode,
-                isLocked: true
+                topLevelNodes
             });
           }
         });
 
-        if (lockedBlocks.length === 0 || isPreview) return;
-
-        // 同步大扫除，一层层抽走因为多级 Callout 和原生 P 标签堆叠产生的空边距
-        cleanupSpacing(element);
-
-        let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.topic?.id || helper?.getModel?.()?.id;
-        if (!topicId) {
-            const match = window.location.pathname.match(/\/t\/[^\/]+\/(\d+)/);
-            if (match) topicId = match[1];
-        }
-
-        let hasReplied = false;
-        const needsReplyCheck = lockedBlocks.some(b => b.type === "reply");
-        if (needsReplyCheck && currentUser && topicId) {
-            hasReplied = await checkUserReplied(currentUser, topicId);
-        }
-
+        // 大扫除与权限解锁恢复
         lockedBlocks.forEach(block => {
-            let msgHtml = "";
-            let icon = "lock";
-
-            if (block.type === "login") {
-                if (currentUser) block.isLocked = false; 
-                else { msgHtml = txt.mask_login; icon = "lock"; }
-            } else if (block.type === "reply") {
-                if (!currentUser) { msgHtml = txt.mask_login_reply; icon = "lock"; }
-                else if (hasReplied || currentUser.admin || currentUser.moderator || currentUser.id === helper?.getModel?.()?.user_id) block.isLocked = false;
-                else { msgHtml = txt.mask_reply; icon = "reply"; }
-            }
-
             if (block.isLocked) {
-                if (block.maskNode) {
-                    const textEl = block.maskNode.querySelector('.secure-text');
-                    if (textEl) textEl.innerHTML = msgHtml;
-                    const iconEl = block.maskNode.querySelector('use');
-                    if (iconEl) iconEl.setAttribute('href', '#' + icon);
-                }
+                cleanupSpacingForMask(block.maskNode, block);
             } else {
                 if (block.maskNode) block.maskNode.remove();
-
-                // 【无损恢复】：将元素解冻复原，不破坏 Glimmer
                 block.topLevelNodes.forEach(n => {
                     if (n.nodeType === Node.ELEMENT_NODE) {
                         n.classList.remove('secure-hidden-element');
                         n.style.display = n.dataset.secureOrigDisplay || '';
                         if (n.style.length === 0) n.removeAttribute('style');
                         safeApplyLinkShield(n);
+                    } else if (n.nodeType === Node.TEXT_NODE) {
+                        if (n.originalText !== undefined) {
+                            n.nodeValue = n.originalText;
+                        }
                     }
                 });
-                // 把抽干的文字塞回去，神不知鬼不觉
-                block.hiddenTextNodes.forEach(item => {
-                    item.textNode.nodeValue = item.origText;
-                });
+
+                if (block.modifiedParents) {
+                    block.modifiedParents.forEach(p => {
+                        p.el.classList.remove('secure-mask-p');
+                        p.el.style.margin = p.origMargin;
+                        p.el.style.padding = p.origPadding;
+                        if (p.el.style.length === 0) p.el.removeAttribute('style');
+                    });
+                }
+                if (block.hiddenBrs) {
+                    block.hiddenBrs.forEach(br => {
+                        br.el.style.display = br.origDisplay;
+                        if (br.el.style.length === 0) br.el.removeAttribute('style');
+                    });
+                }
             }
         });
-
-        // 只要有一块被解锁了，就把没收的 padding/margin 原样奉还
-        if (lockedBlocks.some(b => !b.isLocked)) {
-             restoreSpacing(element);
-        }
 
       } catch (err) {
         console.error("Secure Content Error:", err);
