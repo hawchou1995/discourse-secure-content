@@ -131,32 +131,22 @@ export default apiInitializer("0.11", (api) => {
     }
   }
 
-  // 【核心新增】：空壳容器清理机，消灭多层嵌套 Callout 留下的幽灵空隙
+  // 【核心补丁】：将 callout-content 纳入自底向上的扫描链，彻底消灭多层嵌套留白！
   function sweepEmptyContainers(root) {
-      let containers = root.querySelectorAll('.callout, .callout-body, .d-quote-callout, blockquote, p');
-      let arr = Array.from(containers).reverse(); // 自底向上扫描，完美兼容多层嵌套
+      let containers = root.querySelectorAll('.callout, .callout-content, .callout-body, .d-quote-callout, blockquote, p');
+      let arr = Array.from(containers).reverse(); // 自底向上扫描
       
       arr.forEach(c => {
-          let hasHiddenElement = c.querySelector('.secure-hidden-element');
-          if (!hasHiddenElement && !c.classList.contains('secure-dynamic-hidden')) return;
-
-          // 特殊规则：如果外层 callout 的 body 已经被掏空了，连带它的外壳（标题和边框）一起隐藏！
-          if (c.classList.contains('callout') || c.classList.contains('d-quote-callout')) {
-              let body = c.querySelector('.callout-body');
-              if (body && body.classList.contains('secure-hidden-element')) {
-                  c.classList.add('secure-hidden-element');
-                  c.classList.add('secure-dynamic-hidden');
-                  return;
-              }
-          }
-
           let hasVisibleContent = Array.from(c.childNodes).some(child => {
               if (child.nodeType === Node.ELEMENT_NODE) {
-                  if (child.classList.contains('secure-hidden-element')) return false;
-                  if (child.classList.contains('secure-content-mask')) return true;
-                  if (child.classList.contains('secure-preview-badge')) return true;
-                  if (child.classList.contains('callout-title')) return false; // 标题不能算作实体内容
+                  // 被锁定的元素不算可视内容
+                  if (child.classList.contains('secure-hidden-element') || child.classList.contains('secure-dynamic-hidden')) return false;
+                  // Callout 组件的框架 UI (标题/图标) 不算实体内容
+                  if (child.classList.contains('callout-title') || child.classList.contains('callout-icon') || child.classList.contains('callout-fold')) return false;
+                  // 纯换行不算内容
                   if (child.tagName === 'BR') return false;
+                  
+                  // 其他都是有意义的展示内容（包括我们的面具或小徽章）
                   return true;
               }
               if (child.nodeType === Node.TEXT_NODE) {
@@ -166,12 +156,10 @@ export default apiInitializer("0.11", (api) => {
           });
           
           if (!hasVisibleContent) {
-              c.classList.add('secure-hidden-element');
-              c.classList.add('secure-dynamic-hidden');
+              c.classList.add('secure-hidden-element', 'secure-dynamic-hidden');
           } else {
               if (c.classList.contains('secure-dynamic-hidden')) {
-                  c.classList.remove('secure-hidden-element');
-                  c.classList.remove('secure-dynamic-hidden');
+                  c.classList.remove('secure-hidden-element', 'secure-dynamic-hidden');
               }
           }
       });
@@ -250,7 +238,6 @@ export default apiInitializer("0.11", (api) => {
                 return true;
             });
 
-            // 隐藏换行符
             let hiddenWhitespaceNodes = [];
             function hideAdjacentBr(node) {
                 if (!node) return null;
@@ -297,7 +284,6 @@ export default apiInitializer("0.11", (api) => {
 
                 maskParentP = maskNode.parentNode;
                 if (maskParentP && maskParentP.tagName === 'P') {
-                    // 强制清零父元素的边距，杜绝留白
                     maskParentP.style.setProperty('margin-bottom', '0', 'important');
                     maskParentP.style.setProperty('margin-top', '0', 'important');
                 }
@@ -316,7 +302,7 @@ export default apiInitializer("0.11", (api) => {
 
         if (lockedBlocks.length === 0 || isPreview) return;
 
-        // 同步阶段清理空壳容器
+        // 同步阶段立即扫除空壳（包括多层 Callout 嵌套）
         sweepEmptyContainers(element);
 
         let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.topic?.id || helper?.getModel?.()?.id;
@@ -377,7 +363,7 @@ export default apiInitializer("0.11", (api) => {
             }
         });
 
-        // 异步解锁后，再清理一次确保应该恢复的容器都恢复了
+        // 异步解锁后，再大扫除一次确保容器重新显形
         sweepEmptyContainers(element);
 
       } catch (err) {
@@ -396,8 +382,8 @@ export default apiInitializer("0.11", (api) => {
                 for (let i = 0; i < m.addedNodes.length; i++) {
                     let node = m.addedNodes[i];
                     if (node.nodeType === Node.ELEMENT_NODE) {
-                        if (node.classList && (node.classList.contains('callout') || node.classList.contains('d-quote-callout'))) runSweep = true;
-                        else if (node.querySelector && node.querySelector('.callout')) runSweep = true;
+                        if (node.classList && (node.classList.contains('callout') || node.classList.contains('d-quote-callout') || node.classList.contains('callout-content'))) runSweep = true;
+                        else if (node.querySelector && node.querySelector('.callout, .d-quote-callout, .callout-content')) runSweep = true;
                         
                         if (node.textContent && (node.textContent.includes("[login]") || node.textContent.includes("[reply]"))) {
                             shouldProcess = true; break;
@@ -406,7 +392,8 @@ export default apiInitializer("0.11", (api) => {
                 }
                 if (shouldProcess) break;
             }
-            // 完美兼容：即使被 callouts 重写了DOM剥夺了原标记，依然可以触发大扫除清理外壳！
+            
+            // 无论是新的锁加入，还是 Callout 组件异步挂载完了壳子，都狠狠地压制它的多余留白
             if (shouldProcess) applySecureContent(element, helper); 
             else if (runSweep) sweepEmptyContainers(element);
         });
