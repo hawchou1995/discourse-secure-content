@@ -141,8 +141,8 @@ export default apiInitializer("0.11", (api) => {
 
       if (!hasVisibleContent) {
           if (hasMask) {
-              // 只有面具，消除边距并干掉多余的换行
-              p.classList.add('secure-mask-p');
+              // 🎯 修复点1：修正 CSS 类名，确保与 common.scss 对应，真正消除 P 标签边距
+              p.classList.add('secure-mask-wrapper-p');
               p.style.setProperty('margin', '0', 'important');
               p.style.setProperty('padding', '0', 'important');
               Array.from(p.childNodes).forEach(child => {
@@ -216,11 +216,25 @@ export default apiInitializer("0.11", (api) => {
                 let afterStartNode = startNode.splitText(startSplitIndex);
                 afterStartNode.nodeValue = afterStartNode.nodeValue.replace(startTag, ""); 
 
+                // 🎯 修复点2：猎杀前置换行符！如果标签后面紧跟的是 <br>，说明是从独立行解析来的，必须干掉这个 <br> 消除空行
+                let nextSibling = afterStartNode.nextSibling;
+                if (nextSibling && nextSibling.nodeType === Node.ELEMENT_NODE && nextSibling.tagName === 'BR') {
+                    nextSibling.classList.add('secure-hidden-element');
+                    nextSibling.style.setProperty('display', 'none', 'important');
+                }
+
                 if (endNode === startNode) endNode = afterStartNode;
 
                 let endSplitIndex = endNode.nodeValue.indexOf(endTag);
                 let afterEndNode = endNode.splitText(endSplitIndex);
                 afterEndNode.nodeValue = afterEndNode.nodeValue.replace(endTag, "");
+
+                // 🎯 修复点3：猎杀后置换行符！如果结束标签前面紧跟的是 <br>，同样干掉，防止底部出现空行
+                let prevSibling = endNode.previousSibling;
+                if (prevSibling && prevSibling.nodeType === Node.ELEMENT_NODE && prevSibling.tagName === 'BR') {
+                    prevSibling.classList.add('secure-hidden-element');
+                    prevSibling.style.setProperty('display', 'none', 'important');
+                }
 
                 let nodesToHide = [];
                 if (afterStartNode === endNode) {
