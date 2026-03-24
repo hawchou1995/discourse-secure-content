@@ -56,7 +56,7 @@ export default apiInitializer("0.11", (api) => {
     });
   });
 
-  // 本地事件监听：发帖瞬间打上绝对信任钢印
+  // 发帖瞬间打上信任钢印
   api.onAppEvent("post:created", (post) => {
       if (currentUser && post && post.topic_id) {
           localStorage.setItem(`secure_replied_${currentUser.id}:${post.topic_id}`, 'true');
@@ -69,20 +69,15 @@ export default apiInitializer("0.11", (api) => {
     const key = `${user.id}:${topicId}`;
     const storageKey = `secure_replied_${key}`;
 
-    // 1. 本地缓存信任
     if (localStorage.getItem(storageKey) === 'true') return true;
     if (replyStatusCache.has(key)) return replyStatusCache.get(key);
-    
-    // 2. 总发帖量为 0 过滤
     if (user.post_count === 0) {
         replyStatusCache.set(key, false); return false;
     }
 
-    // 3. 【核心更新】读取 Discourse 官方自带的话题参与属性（零延迟，无需网络请求）
     try {
         const topicController = api.container.lookup('controller:topic');
         if (topicController && topicController.model && topicController.model.id == topicId) {
-            // posted 属性如果是 true，代表该用户绝对回复过此贴
             if (topicController.model.posted || (topicController.model.get && topicController.model.get('posted'))) {
                 localStorage.setItem(storageKey, 'true');
                 replyStatusCache.set(key, true);
@@ -91,26 +86,20 @@ export default apiInitializer("0.11", (api) => {
         }
     } catch (e) {}
 
-    // 4. 当前 DOM 内直接扫描
     if (document.querySelector(`article[data-user-id="${user.id}"]`)) {
         localStorage.setItem(storageKey, 'true');
         replyStatusCache.set(key, true); 
         return true;
     }
 
-    // 5. 终极 API 兜底（修复了中文用户名导致 400 崩溃的 Bug）
     try {
-      // 放弃容易报错的 @ 语法，改用官方的合法 search.json 和 user:"" 语法
       const searchQuery = `topic:${topicId} user:"${user.username}"`;
       const result = await ajax(`/search.json`, { data: { q: searchQuery } });
       let hasPost = (result && result.posts && result.posts.length > 0);
       if (hasPost) localStorage.setItem(storageKey, 'true');
       replyStatusCache.set(key, hasPost);
       return hasPost;
-    } catch (e) { 
-      console.warn("[Secure Content] Fallback API check failed:", e);
-      return false; 
-    }
+    } catch (e) { return false; }
   }
 
   function renderMask(type, icon, msgHtml) {
@@ -138,10 +127,54 @@ export default apiInitializer("0.11", (api) => {
     if (typeof window.applyExternalLinkShield === 'function') {
       try {
         setTimeout(() => window.applyExternalLinkShield(targetNode), 50);
-      } catch (err) {
-        console.warn("[Secure Content] 外链护盾执行异常:", err);
-      }
+      } catch (err) { }
     }
+  }
+
+  // 【核心新增】：空壳容器清理机，消灭多层嵌套 Callout 留下的幽灵空隙
+  function sweepEmptyContainers(root) {
+      let containers = root.querySelectorAll('.callout, .callout-body, .d-quote-callout, blockquote, p');
+      let arr = Array.from(containers).reverse(); // 自底向上扫描，完美兼容多层嵌套
+      
+      arr.forEach(c => {
+          let hasHiddenElement = c.querySelector('.secure-hidden-element');
+          if (!hasHiddenElement && !c.classList.contains('secure-dynamic-hidden')) return;
+
+          // 特殊规则：如果外层 callout 的 body 已经被掏空了，连带它的外壳（标题和边框）一起隐藏！
+          if (c.classList.contains('callout') || c.classList.contains('d-quote-callout')) {
+              let body = c.querySelector('.callout-body');
+              if (body && body.classList.contains('secure-hidden-element')) {
+                  c.classList.add('secure-hidden-element');
+                  c.classList.add('secure-dynamic-hidden');
+                  return;
+              }
+          }
+
+          let hasVisibleContent = Array.from(c.childNodes).some(child => {
+              if (child.nodeType === Node.ELEMENT_NODE) {
+                  if (child.classList.contains('secure-hidden-element')) return false;
+                  if (child.classList.contains('secure-content-mask')) return true;
+                  if (child.classList.contains('secure-preview-badge')) return true;
+                  if (child.classList.contains('callout-title')) return false; // 标题不能算作实体内容
+                  if (child.tagName === 'BR') return false;
+                  return true;
+              }
+              if (child.nodeType === Node.TEXT_NODE) {
+                  return child.nodeValue.trim() !== "";
+              }
+              return false;
+          });
+          
+          if (!hasVisibleContent) {
+              c.classList.add('secure-hidden-element');
+              c.classList.add('secure-dynamic-hidden');
+          } else {
+              if (c.classList.contains('secure-dynamic-hidden')) {
+                  c.classList.remove('secure-hidden-element');
+                  c.classList.remove('secure-dynamic-hidden');
+              }
+          }
+      });
   }
 
   async function applySecureContent(element, helper) {
@@ -217,9 +250,29 @@ export default apiInitializer("0.11", (api) => {
                 return true;
             });
 
-            let wrappedTextNodes = [];
+            // 隐藏换行符
             let hiddenWhitespaceNodes = [];
+            function hideAdjacentBr(node) {
+                if (!node) return null;
+                if (node.nodeType === Node.TEXT_NODE && node.nodeValue.trim() === "") {
+                    if (node.nextSibling && node.nextSibling.tagName === 'BR') {
+                        node.nextSibling.classList.add('secure-hidden-element', 'secure-dynamic-hidden');
+                        return node.nextSibling;
+                    } else if (node.previousSibling && node.previousSibling.tagName === 'BR') {
+                        node.previousSibling.classList.add('secure-hidden-element', 'secure-dynamic-hidden');
+                        return node.previousSibling;
+                    }
+                }
+                return null;
+            }
+            let br1 = hideAdjacentBr(afterStartNode);
+            if (br1) hiddenWhitespaceNodes.push(br1);
+            let br2 = hideAdjacentBr(afterEndNode);
+            if (br2) hiddenWhitespaceNodes.push(br2);
+
+            let wrappedTextNodes = [];
             let maskNode = null;
+            let maskParentP = null;
 
             if (isPreview) {
                 maskNode = document.createElement("div");
@@ -227,7 +280,6 @@ export default apiInitializer("0.11", (api) => {
                 maskNode.textContent = txt.preview;
                 afterStartNode.parentNode.insertBefore(maskNode, afterStartNode);
             } else {
-                // 【第 1 阶段：同步上锁，彻底消灭闪烁】
                 topLevelNodes.forEach(n => {
                     if (n.nodeType === Node.ELEMENT_NODE) {
                         n.classList.add('secure-hidden-element');
@@ -243,47 +295,12 @@ export default apiInitializer("0.11", (api) => {
                 maskNode = renderMask(type, "lock", txt["mask_" + type]); 
                 afterStartNode.parentNode.insertBefore(maskNode, afterStartNode);
 
-                let p = maskNode.parentNode;
-                if (p && p.tagName === 'P') {
-                    let hasRealContent = Array.from(p.childNodes).some(child => {
-                         if (child === maskNode) return false;
-                         if (child.classList && child.classList.contains('secure-hidden-element')) return false;
-                         if (child.nodeType === Node.ELEMENT_NODE && child.tagName !== 'BR') return true;
-                         if (child.nodeType === Node.TEXT_NODE && child.nodeValue.trim() !== "") return true;
-                         return false;
-                    });
-                    if (!hasRealContent) p.classList.add('secure-mask-wrapper-p');
+                maskParentP = maskNode.parentNode;
+                if (maskParentP && maskParentP.tagName === 'P') {
+                    // 强制清零父元素的边距，杜绝留白
+                    maskParentP.style.setProperty('margin-bottom', '0', 'important');
+                    maskParentP.style.setProperty('margin-top', '0', 'important');
                 }
-
-                function cleanupWhitespace(node) {
-                    if (!node) return;
-                    if (node.nodeValue.trim() === "") {
-                        if (node.nextSibling && node.nextSibling.tagName === 'BR') {
-                            node.nextSibling.classList.add('secure-hidden-element');
-                            hiddenWhitespaceNodes.push(node.nextSibling);
-                        } else if (node.previousSibling && node.previousSibling.tagName === 'BR') {
-                            node.previousSibling.classList.add('secure-hidden-element');
-                            hiddenWhitespaceNodes.push(node.previousSibling);
-                        }
-                    }
-                    let parentP = node.parentNode;
-                    if (parentP && parentP.tagName === 'P') {
-                        let hasContent = Array.from(parentP.childNodes).some(child => {
-                            if (child.classList && child.classList.contains('secure-hidden-element')) return false;
-                            if (child.classList && (child.classList.contains('secure-content-mask') || child.classList.contains('secure-preview-badge'))) return true;
-                            if (child.nodeType === Node.ELEMENT_NODE && child.tagName !== 'BR') return true;
-                            if (child.nodeType === Node.TEXT_NODE && child.nodeValue.trim() !== "") return true;
-                            return false;
-                        });
-                        if (!hasContent) {
-                            parentP.classList.add('secure-hidden-element');
-                            hiddenWhitespaceNodes.push(parentP);
-                        }
-                    }
-                }
-
-                cleanupWhitespace(afterStartNode);
-                cleanupWhitespace(afterEndNode);
             }
 
             lockedBlocks.push({
@@ -291,14 +308,17 @@ export default apiInitializer("0.11", (api) => {
                 topLevelNodes,
                 wrappedTextNodes,
                 hiddenWhitespaceNodes,
-                maskNode
+                maskNode,
+                maskParentP
             });
           }
         });
 
         if (lockedBlocks.length === 0 || isPreview) return;
 
-        // 【第 2 阶段：发起鉴权】
+        // 同步阶段清理空壳容器
+        sweepEmptyContainers(element);
+
         let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.topic?.id || helper?.getModel?.()?.id;
         if (!topicId) {
             const match = window.location.pathname.match(/\/t\/[^\/]+\/(\d+)/);
@@ -311,7 +331,6 @@ export default apiInitializer("0.11", (api) => {
             hasReplied = await checkUserReplied(currentUser, topicId);
         }
 
-        // 【第 3 阶段：基于权限解锁与恢复】
         lockedBlocks.forEach(block => {
             let isLocked = true;
             let msgHtml = "";
@@ -334,23 +353,32 @@ export default apiInitializer("0.11", (api) => {
                     if (iconEl) iconEl.setAttribute('href', '#' + icon);
                 }
             } else {
-                if (block.maskNode) {
-                    let p = block.maskNode.parentNode;
-                    block.maskNode.remove();
-                    if (p && p.tagName === 'P') p.classList.remove('secure-mask-wrapper-p');
+                if (block.maskNode) block.maskNode.remove();
+                if (block.maskParentP) {
+                    block.maskParentP.style.removeProperty('margin-bottom');
+                    block.maskParentP.style.removeProperty('margin-top');
                 }
 
-                block.topLevelNodes.forEach(n => n.nodeType === Node.ELEMENT_NODE && n.classList.remove('secure-hidden-element'));
+                block.topLevelNodes.forEach(n => {
+                    if (n.nodeType === Node.ELEMENT_NODE) n.classList.remove('secure-hidden-element');
+                });
                 block.wrappedTextNodes.forEach(item => {
                     if (item.span && item.span.parentNode) {
                         item.span.parentNode.insertBefore(item.textNode, item.span);
                         item.span.remove();
                     }
                 });
-                block.hiddenWhitespaceNodes.forEach(n => n.classList.remove('secure-hidden-element'));
-                block.topLevelNodes.forEach(n => n.nodeType === Node.ELEMENT_NODE && safeApplyLinkShield(n));
+                block.hiddenWhitespaceNodes.forEach(n => {
+                    n.classList.remove('secure-hidden-element', 'secure-dynamic-hidden');
+                });
+                block.topLevelNodes.forEach(n => {
+                    if (n.nodeType === Node.ELEMENT_NODE) safeApplyLinkShield(n);
+                });
             }
         });
+
+        // 异步解锁后，再清理一次确保应该恢复的容器都恢复了
+        sweepEmptyContainers(element);
 
       } catch (err) {
         console.error("Secure Content Error:", err);
@@ -363,10 +391,14 @@ export default apiInitializer("0.11", (api) => {
 
         const observer = new MutationObserver((mutations) => {
             let shouldProcess = false;
+            let runSweep = false;
             for (let m of mutations) {
                 for (let i = 0; i < m.addedNodes.length; i++) {
                     let node = m.addedNodes[i];
-                    if (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.TEXT_NODE) {
+                    if (node.nodeType === Node.ELEMENT_NODE) {
+                        if (node.classList && (node.classList.contains('callout') || node.classList.contains('d-quote-callout'))) runSweep = true;
+                        else if (node.querySelector && node.querySelector('.callout')) runSweep = true;
+                        
                         if (node.textContent && (node.textContent.includes("[login]") || node.textContent.includes("[reply]"))) {
                             shouldProcess = true; break;
                         }
@@ -374,7 +406,9 @@ export default apiInitializer("0.11", (api) => {
                 }
                 if (shouldProcess) break;
             }
+            // 完美兼容：即使被 callouts 重写了DOM剥夺了原标记，依然可以触发大扫除清理外壳！
             if (shouldProcess) applySecureContent(element, helper); 
+            else if (runSweep) sweepEmptyContainers(element);
         });
         observer.observe(element, { childList: true, subtree: true });
     },
