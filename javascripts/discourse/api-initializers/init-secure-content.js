@@ -56,7 +56,7 @@ export default apiInitializer("0.11", (api) => {
     });
   });
 
-  // 本地事件监听：用户只要回帖，瞬间打上信任钢印（抗强刷核心）
+  // 本地事件监听：发帖瞬间打上绝对信任钢印
   api.onAppEvent("post:created", (post) => {
       if (currentUser && post && post.topic_id) {
           localStorage.setItem(`secure_replied_${currentUser.id}:${post.topic_id}`, 'true');
@@ -69,24 +69,48 @@ export default apiInitializer("0.11", (api) => {
     const key = `${user.id}:${topicId}`;
     const storageKey = `secure_replied_${key}`;
 
+    // 1. 本地缓存信任
     if (localStorage.getItem(storageKey) === 'true') return true;
     if (replyStatusCache.has(key)) return replyStatusCache.get(key);
+    
+    // 2. 总发帖量为 0 过滤
     if (user.post_count === 0) {
         replyStatusCache.set(key, false); return false;
     }
+
+    // 3. 【核心更新】读取 Discourse 官方自带的话题参与属性（零延迟，无需网络请求）
+    try {
+        const topicController = api.container.lookup('controller:topic');
+        if (topicController && topicController.model && topicController.model.id == topicId) {
+            // posted 属性如果是 true，代表该用户绝对回复过此贴
+            if (topicController.model.posted || (topicController.model.get && topicController.model.get('posted'))) {
+                localStorage.setItem(storageKey, 'true');
+                replyStatusCache.set(key, true);
+                return true;
+            }
+        }
+    } catch (e) {}
+
+    // 4. 当前 DOM 内直接扫描
     if (document.querySelector(`article[data-user-id="${user.id}"]`)) {
         localStorage.setItem(storageKey, 'true');
         replyStatusCache.set(key, true); 
         return true;
     }
+
+    // 5. 终极 API 兜底（修复了中文用户名导致 400 崩溃的 Bug）
     try {
-      const searchQuery = `topic:${topicId} @${user.username}`;
-      const result = await ajax(`/search/query.json`, { data: { q: searchQuery } });
+      // 放弃容易报错的 @ 语法，改用官方的合法 search.json 和 user:"" 语法
+      const searchQuery = `topic:${topicId} user:"${user.username}"`;
+      const result = await ajax(`/search.json`, { data: { q: searchQuery } });
       let hasPost = (result && result.posts && result.posts.length > 0);
       if (hasPost) localStorage.setItem(storageKey, 'true');
       replyStatusCache.set(key, hasPost);
       return hasPost;
-    } catch (e) { return false; }
+    } catch (e) { 
+      console.warn("[Secure Content] Fallback API check failed:", e);
+      return false; 
+    }
   }
 
   function renderMask(type, icon, msgHtml) {
@@ -203,7 +227,7 @@ export default apiInitializer("0.11", (api) => {
                 maskNode.textContent = txt.preview;
                 afterStartNode.parentNode.insertBefore(maskNode, afterStartNode);
             } else {
-                // 【第 1 阶段：不管三七二十一，瞬间同步上锁，彻底消灭闪烁】
+                // 【第 1 阶段：同步上锁，彻底消灭闪烁】
                 topLevelNodes.forEach(n => {
                     if (n.nodeType === Node.ELEMENT_NODE) {
                         n.classList.add('secure-hidden-element');
@@ -219,7 +243,6 @@ export default apiInitializer("0.11", (api) => {
                 maskNode = renderMask(type, "lock", txt["mask_" + type]); 
                 afterStartNode.parentNode.insertBefore(maskNode, afterStartNode);
 
-                // 【空行清理机】在锁定的状态下，隐藏多余空壳和空行，记录下来以备解锁恢复
                 let p = maskNode.parentNode;
                 if (p && p.tagName === 'P') {
                     let hasRealContent = Array.from(p.childNodes).some(child => {
@@ -273,10 +296,9 @@ export default apiInitializer("0.11", (api) => {
           }
         });
 
-        // 若没有要处理的隐藏块，或者处于预览模式，直接退出，不发任何网络请求
         if (lockedBlocks.length === 0 || isPreview) return;
 
-        // 【第 2 阶段：发起异步网络请求/读取缓存鉴权】
+        // 【第 2 阶段：发起鉴权】
         let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.topic?.id || helper?.getModel?.()?.id;
         if (!topicId) {
             const match = window.location.pathname.match(/\/t\/[^\/]+\/(\d+)/);
@@ -289,7 +311,7 @@ export default apiInitializer("0.11", (api) => {
             hasReplied = await checkUserReplied(currentUser, topicId);
         }
 
-        // 【第 3 阶段：基于权限，对块进行无损解禁与恢复】
+        // 【第 3 阶段：基于权限解锁与恢复】
         lockedBlocks.forEach(block => {
             let isLocked = true;
             let msgHtml = "";
@@ -305,7 +327,6 @@ export default apiInitializer("0.11", (api) => {
             }
 
             if (isLocked) {
-                // 如果用户没权限，只需要更新一下面具上的文字提示即可
                 if (block.maskNode) {
                     const textEl = block.maskNode.querySelector('.secure-text');
                     if (textEl) textEl.innerHTML = msgHtml;
@@ -313,36 +334,21 @@ export default apiInitializer("0.11", (api) => {
                     if (iconEl) iconEl.setAttribute('href', '#' + icon);
                 }
             } else {
-                // 如果用户有权限，无损撤销同步阶段的所有锁定操作，并原汁原味恢复空行！
                 if (block.maskNode) {
                     let p = block.maskNode.parentNode;
                     block.maskNode.remove();
                     if (p && p.tagName === 'P') p.classList.remove('secure-mask-wrapper-p');
                 }
 
-                block.topLevelNodes.forEach(n => {
-                    if (n.nodeType === Node.ELEMENT_NODE) {
-                        n.classList.remove('secure-hidden-element');
-                    }
-                });
-
+                block.topLevelNodes.forEach(n => n.nodeType === Node.ELEMENT_NODE && n.classList.remove('secure-hidden-element'));
                 block.wrappedTextNodes.forEach(item => {
-                    let span = item.span;
-                    if (span && span.parentNode) {
-                        span.parentNode.insertBefore(item.textNode, span);
-                        span.remove();
+                    if (item.span && item.span.parentNode) {
+                        item.span.parentNode.insertBefore(item.textNode, item.span);
+                        item.span.remove();
                     }
                 });
-
-                // 还原当初被隐藏的空行，保证发布者排版的原汁原味
-                block.hiddenWhitespaceNodes.forEach(n => {
-                    n.classList.remove('secure-hidden-element');
-                });
-
-                // 对刚解禁的节点执行外链护盾扫描
-                block.topLevelNodes.forEach(n => {
-                    if (n.nodeType === Node.ELEMENT_NODE) safeApplyLinkShield(n);
-                });
+                block.hiddenWhitespaceNodes.forEach(n => n.classList.remove('secure-hidden-element'));
+                block.topLevelNodes.forEach(n => n.nodeType === Node.ELEMENT_NODE && safeApplyLinkShield(n));
             }
         });
 
@@ -355,7 +361,6 @@ export default apiInitializer("0.11", (api) => {
     (element, helper) => {
         applySecureContent(element, helper);
 
-        // 终极防线：监听 Callout 的异步渲染
         const observer = new MutationObserver((mutations) => {
             let shouldProcess = false;
             for (let m of mutations) {
