@@ -56,7 +56,6 @@ export default apiInitializer("0.11", (api) => {
     });
   });
 
-  // 发帖瞬间打上信任钢印
   api.onAppEvent("post:created", (post) => {
       if (currentUser && post && post.topic_id) {
           localStorage.setItem(`secure_replied_${currentUser.id}:${post.topic_id}`, 'true');
@@ -131,38 +130,48 @@ export default apiInitializer("0.11", (api) => {
     }
   }
 
-  // 【核心补丁】：将 callout-content 纳入自底向上的扫描链，彻底消灭多层嵌套留白！
-  function sweepEmptyContainers(root) {
-      let containers = root.querySelectorAll('.callout, .callout-content, .callout-body, .d-quote-callout, blockquote, p');
-      let arr = Array.from(containers).reverse(); // 自底向上扫描
-      
-      arr.forEach(c => {
-          let hasVisibleContent = Array.from(c.childNodes).some(child => {
-              if (child.nodeType === Node.ELEMENT_NODE) {
-                  // 被锁定的元素不算可视内容
-                  if (child.classList.contains('secure-hidden-element') || child.classList.contains('secure-dynamic-hidden')) return false;
-                  // Callout 组件的框架 UI (标题/图标) 不算实体内容
-                  if (child.classList.contains('callout-title') || child.classList.contains('callout-icon') || child.classList.contains('callout-fold')) return false;
-                  // 纯换行不算内容
-                  if (child.tagName === 'BR') return false;
-                  
-                  // 其他都是有意义的展示内容（包括我们的面具或小徽章）
-                  return true;
-              }
-              if (child.nodeType === Node.TEXT_NODE) {
-                  return child.nodeValue.trim() !== "";
-              }
-              return false;
-          });
-          
-          if (!hasVisibleContent) {
-              c.classList.add('secure-hidden-element', 'secure-dynamic-hidden');
-          } else {
-              if (c.classList.contains('secure-dynamic-hidden')) {
-                  c.classList.remove('secure-hidden-element', 'secure-dynamic-hidden');
-              }
+  // 靶向收缩相邻空行
+  function hideAdjacentBr(node, hiddenList) {
+      if (!node) return;
+      if (node.nodeType === Node.TEXT_NODE && node.nodeValue.trim() === "") {
+          if (node.nextSibling && node.nextSibling.tagName === 'BR') {
+              node.nextSibling.classList.add('secure-hidden-element');
+              hiddenList.push(node.nextSibling);
+          } else if (node.previousSibling && node.previousSibling.tagName === 'BR') {
+              node.previousSibling.classList.add('secure-hidden-element');
+              hiddenList.push(node.previousSibling);
           }
+      }
+  }
+
+  // 【核心新增】外科手术级的空壳修剪器。从里向外靶向切除因隐藏内容而留下的空架子
+  function hideIfEmpty(el, hiddenList, rootElement) {
+      if (!el || el === rootElement || el === document.body) return;
+      
+      // 如果当前容器包含我们插入的面具，那是绝对不能隐藏的，必须留着给用户看
+      if (el.querySelector('.secure-content-mask') || el.classList.contains('secure-content-mask')) return;
+      if (el.querySelector('.secure-preview-badge') || el.classList.contains('secure-preview-badge')) return;
+
+      let hasVisible = Array.from(el.childNodes).some(child => {
+          if (child.nodeType === Node.ELEMENT_NODE) {
+              if (child.classList.contains('secure-hidden-element')) return false;
+              if (child.tagName === 'BR') return false;
+              // Callout 的外壳配件不能算作正文
+              if (child.classList.contains('callout-title') || child.classList.contains('callout-icon') || child.classList.contains('callout-fold')) return false;
+              return true;
+          }
+          if (child.nodeType === Node.TEXT_NODE) {
+              return child.nodeValue.trim() !== "";
+          }
+          return false;
       });
+
+      // 如果这个容器空了，切掉它，然后继续往外层追溯！(完美解决多层嵌套空行)
+      if (!hasVisible) {
+          el.classList.add('secure-hidden-element');
+          hiddenList.push(el);
+          hideIfEmpty(el.parentNode, hiddenList, rootElement);
+      }
   }
 
   async function applySecureContent(element, helper) {
@@ -238,26 +247,8 @@ export default apiInitializer("0.11", (api) => {
                 return true;
             });
 
-            let hiddenWhitespaceNodes = [];
-            function hideAdjacentBr(node) {
-                if (!node) return null;
-                if (node.nodeType === Node.TEXT_NODE && node.nodeValue.trim() === "") {
-                    if (node.nextSibling && node.nextSibling.tagName === 'BR') {
-                        node.nextSibling.classList.add('secure-hidden-element', 'secure-dynamic-hidden');
-                        return node.nextSibling;
-                    } else if (node.previousSibling && node.previousSibling.tagName === 'BR') {
-                        node.previousSibling.classList.add('secure-hidden-element', 'secure-dynamic-hidden');
-                        return node.previousSibling;
-                    }
-                }
-                return null;
-            }
-            let br1 = hideAdjacentBr(afterStartNode);
-            if (br1) hiddenWhitespaceNodes.push(br1);
-            let br2 = hideAdjacentBr(afterEndNode);
-            if (br2) hiddenWhitespaceNodes.push(br2);
-
             let wrappedTextNodes = [];
+            let hiddenWhitespaceNodes = [];
             let maskNode = null;
             let maskParentP = null;
 
@@ -267,6 +258,11 @@ export default apiInitializer("0.11", (api) => {
                 maskNode.textContent = txt.preview;
                 afterStartNode.parentNode.insertBefore(maskNode, afterStartNode);
             } else {
+                // 第 1 步：优先安插遮罩
+                maskNode = renderMask(type, "lock", txt["mask_" + type]); 
+                afterStartNode.parentNode.insertBefore(maskNode, afterStartNode);
+
+                // 第 2 步：将原本应锁死的内容隐藏
                 topLevelNodes.forEach(n => {
                     if (n.nodeType === Node.ELEMENT_NODE) {
                         n.classList.add('secure-hidden-element');
@@ -279,14 +275,18 @@ export default apiInitializer("0.11", (api) => {
                     }
                 });
 
-                maskNode = renderMask(type, "lock", txt["mask_" + type]); 
-                afterStartNode.parentNode.insertBefore(maskNode, afterStartNode);
-
+                // 第 3 步：强制清除面具自带的段落上下边距，这是扼杀大部分缝隙的关键
                 maskParentP = maskNode.parentNode;
                 if (maskParentP && maskParentP.tagName === 'P') {
                     maskParentP.style.setProperty('margin-bottom', '0', 'important');
                     maskParentP.style.setProperty('margin-top', '0', 'important');
                 }
+
+                // 第 4 步：靶向清除因内容隐藏而暴露的孤立空行和多层 Callout 空壳
+                hideAdjacentBr(afterStartNode, hiddenWhitespaceNodes);
+                hideAdjacentBr(afterEndNode, hiddenWhitespaceNodes);
+                hideIfEmpty(afterStartNode.parentNode, hiddenWhitespaceNodes, element);
+                hideIfEmpty(afterEndNode.parentNode, hiddenWhitespaceNodes, element);
             }
 
             lockedBlocks.push({
@@ -302,9 +302,6 @@ export default apiInitializer("0.11", (api) => {
 
         if (lockedBlocks.length === 0 || isPreview) return;
 
-        // 同步阶段立即扫除空壳（包括多层 Callout 嵌套）
-        sweepEmptyContainers(element);
-
         let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.topic?.id || helper?.getModel?.()?.id;
         if (!topicId) {
             const match = window.location.pathname.match(/\/t\/[^\/]+\/(\d+)/);
@@ -317,6 +314,7 @@ export default apiInitializer("0.11", (api) => {
             hasReplied = await checkUserReplied(currentUser, topicId);
         }
 
+        // 最终阶段：依据权限，原封不动地解禁
         lockedBlocks.forEach(block => {
             let isLocked = true;
             let msgHtml = "";
@@ -354,17 +352,17 @@ export default apiInitializer("0.11", (api) => {
                         item.span.remove();
                     }
                 });
+                
+                // 将被作为空壳收容的所有的 P 标签、多级 Callout 边框，瞬间解禁恢复！
                 block.hiddenWhitespaceNodes.forEach(n => {
-                    n.classList.remove('secure-hidden-element', 'secure-dynamic-hidden');
+                    n.classList.remove('secure-hidden-element');
                 });
+                
                 block.topLevelNodes.forEach(n => {
                     if (n.nodeType === Node.ELEMENT_NODE) safeApplyLinkShield(n);
                 });
             }
         });
-
-        // 异步解锁后，再大扫除一次确保容器重新显形
-        sweepEmptyContainers(element);
 
       } catch (err) {
         console.error("Secure Content Error:", err);
@@ -377,14 +375,10 @@ export default apiInitializer("0.11", (api) => {
 
         const observer = new MutationObserver((mutations) => {
             let shouldProcess = false;
-            let runSweep = false;
             for (let m of mutations) {
                 for (let i = 0; i < m.addedNodes.length; i++) {
                     let node = m.addedNodes[i];
-                    if (node.nodeType === Node.ELEMENT_NODE) {
-                        if (node.classList && (node.classList.contains('callout') || node.classList.contains('d-quote-callout') || node.classList.contains('callout-content'))) runSweep = true;
-                        else if (node.querySelector && node.querySelector('.callout, .d-quote-callout, .callout-content')) runSweep = true;
-                        
+                    if (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.TEXT_NODE) {
                         if (node.textContent && (node.textContent.includes("[login]") || node.textContent.includes("[reply]"))) {
                             shouldProcess = true; break;
                         }
@@ -392,10 +386,7 @@ export default apiInitializer("0.11", (api) => {
                 }
                 if (shouldProcess) break;
             }
-            
-            // 无论是新的锁加入，还是 Callout 组件异步挂载完了壳子，都狠狠地压制它的多余留白
             if (shouldProcess) applySecureContent(element, helper); 
-            else if (runSweep) sweepEmptyContainers(element);
         });
         observer.observe(element, { childList: true, subtree: true });
     },
