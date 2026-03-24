@@ -56,21 +56,34 @@ export default apiInitializer("0.11", (api) => {
     });
   });
 
+  // 本地事件监听：用户只要回帖，瞬间打上信任钢印（抗强刷核心）
+  api.onAppEvent("post:created", (post) => {
+      if (currentUser && post && post.topic_id) {
+          localStorage.setItem(`secure_replied_${currentUser.id}:${post.topic_id}`, 'true');
+      }
+  });
+
   const replyStatusCache = new Map();
   async function checkUserReplied(user, topicId) {
     if (!user || !topicId) return false;
     const key = `${user.id}:${topicId}`;
+    const storageKey = `secure_replied_${key}`;
+
+    if (localStorage.getItem(storageKey) === 'true') return true;
     if (replyStatusCache.has(key)) return replyStatusCache.get(key);
     if (user.post_count === 0) {
         replyStatusCache.set(key, false); return false;
     }
     if (document.querySelector(`article[data-user-id="${user.id}"]`)) {
-        replyStatusCache.set(key, true); return true;
+        localStorage.setItem(storageKey, 'true');
+        replyStatusCache.set(key, true); 
+        return true;
     }
     try {
       const searchQuery = `topic:${topicId} @${user.username}`;
       const result = await ajax(`/search/query.json`, { data: { q: searchQuery } });
       let hasPost = (result && result.posts && result.posts.length > 0);
+      if (hasPost) localStorage.setItem(storageKey, 'true');
       replyStatusCache.set(key, hasPost);
       return hasPost;
     } catch (e) { return false; }
@@ -109,21 +122,8 @@ export default apiInitializer("0.11", (api) => {
 
   async function applySecureContent(element, helper) {
       try {
-        const contentText = element.textContent;
-        if (!contentText || (!contentText.includes("[login]") && !contentText.includes("[reply]"))) return;
-
         const isPreview = element.classList.contains("d-editor-preview") || element.closest(".d-editor-preview");
-
-        let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.topic?.id || helper?.getModel?.()?.id;
-        if (!topicId) {
-            const match = window.location.pathname.match(/\/t\/[^\/]+\/(\d+)/);
-            if (match) topicId = match[1];
-        }
-
-        let hasReplied = false;
-        if (contentText.includes("[reply]") && currentUser && topicId) {
-           hasReplied = await checkUserReplied(currentUser, topicId);
-        }
+        let lockedBlocks = [];
 
         ["login", "reply"].forEach(type => {
           const startTag = `[${type}]`;
@@ -137,9 +137,7 @@ export default apiInitializer("0.11", (api) => {
 
             while (walker.nextNode()) {
               let text = walker.currentNode.nodeValue;
-              if (!startNode && text.includes(startTag)) {
-                startNode = walker.currentNode;
-              }
+              if (!startNode && text.includes(startTag)) startNode = walker.currentNode;
               if (startNode && walker.currentNode.nodeValue.includes(endTag)) {
                 endNode = walker.currentNode;
                 break;
@@ -148,7 +146,6 @@ export default apiInitializer("0.11", (api) => {
 
             if (!startNode || !endNode) break;
 
-            // 1. 精确切分出标签边界
             let startSplitIndex = startNode.nodeValue.indexOf(startTag);
             let afterStartNode = startNode.splitText(startSplitIndex);
             afterStartNode.nodeValue = afterStartNode.nodeValue.replace(startTag, ""); 
@@ -159,141 +156,196 @@ export default apiInitializer("0.11", (api) => {
             let afterEndNode = endNode.splitText(endSplitIndex);
             afterEndNode.nodeValue = afterEndNode.nodeValue.replace(endTag, "");
 
-            // 2. 权限判定
-            let isLocked = true;
-            let msgHtml = "";
-            let icon = "lock";
-
-            if (type === "login") {
-              if (currentUser) isLocked = false; 
-              else { msgHtml = txt.mask_login; icon = "lock"; }
-            } else if (type === "reply") {
-              if (!currentUser) { msgHtml = txt.mask_login_reply; icon = "lock"; }
-              else if (hasReplied || currentUser.admin || currentUser.moderator || currentUser.id === helper?.getModel?.()?.user_id) isLocked = false;
-              else { msgHtml = txt.mask_reply; icon = "reply"; }
-            }
-
-            // 3. 渲染并插入面具节点
-            let maskNode = null;
-            if (isPreview) {
-               maskNode = document.createElement("div");
-               maskNode.className = "secure-preview-badge"; 
-               maskNode.textContent = txt.preview;
-            } else if (isLocked) {
-               maskNode = renderMask(type, icon, msgHtml);
-            }
-
-            if (maskNode) {
-               afterStartNode.parentNode.insertBefore(maskNode, afterStartNode);
-               // 如果这个 P 标签里只有面具（原标签被删了），强行干掉它的自带间距
-               let p = maskNode.parentNode;
-               if (p && p.tagName === 'P') {
-                   let hasRealContent = Array.from(p.childNodes).some(child => {
-                        if (child === maskNode) return false;
-                        if (child.classList && child.classList.contains('secure-hidden-element')) return false;
-                        if (child.nodeType === Node.ELEMENT_NODE && child.tagName !== 'BR') return true;
-                        if (child.nodeType === Node.TEXT_NODE && child.nodeValue.trim() !== "") return true;
-                        return false;
-                   });
-                   if (!hasRealContent) p.classList.add('secure-mask-wrapper-p');
-               }
-            }
-
-            // 4. 将包裹区间内的所有结构静默隐藏（保持 Glimmer 完整）
-            if (isLocked && !isPreview) {
-                let nodesToHide = [];
-                if (afterStartNode === endNode) {
+            let nodesToHide = [];
+            if (afterStartNode === endNode) {
+                nodesToHide.push(endNode);
+            } else {
+                let range = document.createRange();
+                range.setStartAfter(afterStartNode);
+                range.setEndBefore(endNode);
+                
+                let container = range.commonAncestorContainer;
+                if (container.nodeType === Node.TEXT_NODE) {
                     nodesToHide.push(endNode);
                 } else {
-                    let range = document.createRange();
-                    range.setStartAfter(afterStartNode);
-                    range.setEndBefore(endNode);
+                    let hideWalker = document.createTreeWalker(container, NodeFilter.SHOW_ALL, null, false);
+                    let inRange = false;
                     
-                    let container = range.commonAncestorContainer;
-                    if (container.nodeType === Node.TEXT_NODE) {
-                        nodesToHide.push(endNode);
-                    } else {
-                        let hideWalker = document.createTreeWalker(container, NodeFilter.SHOW_ALL, null, false);
-                        let inRange = false;
-                        
-                        while (hideWalker.nextNode()) {
-                            let node = hideWalker.currentNode;
-                            if (node === afterStartNode) {
-                                inRange = true; continue;
-                            }
-                            if (node === endNode) {
-                                nodesToHide.push(endNode); break;
-                            }
-                            if (inRange && !node.contains(endNode)) {
-                                if (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.TEXT_NODE) {
-                                    nodesToHide.push(node);
-                                }
+                    while (hideWalker.nextNode()) {
+                        let node = hideWalker.currentNode;
+                        if (node === afterStartNode) { inRange = true; continue; }
+                        if (node === endNode) { nodesToHide.push(endNode); break; }
+                        if (inRange && !node.contains(endNode)) {
+                            if (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.TEXT_NODE) {
+                                nodesToHide.push(node);
                             }
                         }
                     }
                 }
+            }
 
-                let topLevelNodes = nodesToHide.filter(n => {
-                    let p = n.parentNode;
-                    while (p) {
-                        if (nodesToHide.includes(p)) return false;
-                        p = p.parentNode;
-                    }
-                    return true;
-                });
+            let topLevelNodes = nodesToHide.filter(n => {
+                let p = n.parentNode;
+                while (p) {
+                    if (nodesToHide.includes(p)) return false;
+                    p = p.parentNode;
+                }
+                return true;
+            });
 
+            let wrappedTextNodes = [];
+            let hiddenWhitespaceNodes = [];
+            let maskNode = null;
+
+            if (isPreview) {
+                maskNode = document.createElement("div");
+                maskNode.className = "secure-preview-badge"; 
+                maskNode.textContent = txt.preview;
+                afterStartNode.parentNode.insertBefore(maskNode, afterStartNode);
+            } else {
+                // 【第 1 阶段：不管三七二十一，瞬间同步上锁，彻底消灭闪烁】
                 topLevelNodes.forEach(n => {
                     if (n.nodeType === Node.ELEMENT_NODE) {
-                        n.classList.add('secure-hidden-element'); // 隐藏包括里面的图片、换行、外部链接等
+                        n.classList.add('secure-hidden-element');
                     } else if (n.nodeType === Node.TEXT_NODE && n.nodeValue.trim() !== "") {
                         let span = document.createElement('span');
                         span.classList.add('secure-hidden-element');
                         n.parentNode.insertBefore(span, n);
                         span.appendChild(n);
+                        wrappedTextNodes.push({ textNode: n, span: span });
                     }
                 });
-            } else {
-               safeApplyLinkShield(element);
-            }
 
-            // 5. 【强力除草机】清理标签移除后产生的“幽灵空行”与空壳 <p>
-            function cleanupWhitespace(node) {
-                if (!node) return;
-                
-                // 如果文字节点空了，清理它旁边失去依靠的 <br> 换行
-                if (node.nodeValue.trim() === "") {
-                    if (node.nextSibling && node.nextSibling.tagName === 'BR') {
-                        node.nextSibling.classList.add('secure-hidden-element');
-                    } else if (node.previousSibling && node.previousSibling.tagName === 'BR') {
-                        node.previousSibling.classList.add('secure-hidden-element');
-                    }
-                }
+                maskNode = renderMask(type, "lock", txt["mask_" + type]); 
+                afterStartNode.parentNode.insertBefore(maskNode, afterStartNode);
 
-                // 检查父 P 标签是否变成了空壳
-                let p = node.parentNode;
+                // 【空行清理机】在锁定的状态下，隐藏多余空壳和空行，记录下来以备解锁恢复
+                let p = maskNode.parentNode;
                 if (p && p.tagName === 'P') {
-                    let hasContent = Array.from(p.childNodes).some(child => {
-                        // 隐藏物不算内容
-                        if (child.classList && child.classList.contains('secure-hidden-element')) return false;
-                        // 面具和徽章算有效内容（保留 P，靠上面的 secure-mask-wrapper-p 消灭 margin）
-                        if (child.classList && (child.classList.contains('secure-content-mask') || child.classList.contains('secure-preview-badge'))) return true;
-                        // 其他真实存在的元素（除 br 外）或非空文本算内容
-                        if (child.nodeType === Node.ELEMENT_NODE && child.tagName !== 'BR') return true;
-                        if (child.nodeType === Node.TEXT_NODE && child.nodeValue.trim() !== "") return true;
-                        return false;
+                    let hasRealContent = Array.from(p.childNodes).some(child => {
+                         if (child === maskNode) return false;
+                         if (child.classList && child.classList.contains('secure-hidden-element')) return false;
+                         if (child.nodeType === Node.ELEMENT_NODE && child.tagName !== 'BR') return true;
+                         if (child.nodeType === Node.TEXT_NODE && child.nodeValue.trim() !== "") return true;
+                         return false;
                     });
-                    
-                    // 如果啥都不剩了（比如解锁后的 [reply] 单独占一行），彻底隐藏这个 P 标签！
-                    if (!hasContent) {
-                        p.classList.add('secure-hidden-element');
+                    if (!hasRealContent) p.classList.add('secure-mask-wrapper-p');
+                }
+
+                function cleanupWhitespace(node) {
+                    if (!node) return;
+                    if (node.nodeValue.trim() === "") {
+                        if (node.nextSibling && node.nextSibling.tagName === 'BR') {
+                            node.nextSibling.classList.add('secure-hidden-element');
+                            hiddenWhitespaceNodes.push(node.nextSibling);
+                        } else if (node.previousSibling && node.previousSibling.tagName === 'BR') {
+                            node.previousSibling.classList.add('secure-hidden-element');
+                            hiddenWhitespaceNodes.push(node.previousSibling);
+                        }
+                    }
+                    let parentP = node.parentNode;
+                    if (parentP && parentP.tagName === 'P') {
+                        let hasContent = Array.from(parentP.childNodes).some(child => {
+                            if (child.classList && child.classList.contains('secure-hidden-element')) return false;
+                            if (child.classList && (child.classList.contains('secure-content-mask') || child.classList.contains('secure-preview-badge'))) return true;
+                            if (child.nodeType === Node.ELEMENT_NODE && child.tagName !== 'BR') return true;
+                            if (child.nodeType === Node.TEXT_NODE && child.nodeValue.trim() !== "") return true;
+                            return false;
+                        });
+                        if (!hasContent) {
+                            parentP.classList.add('secure-hidden-element');
+                            hiddenWhitespaceNodes.push(parentP);
+                        }
                     }
                 }
+
+                cleanupWhitespace(afterStartNode);
+                cleanupWhitespace(afterEndNode);
             }
 
-            cleanupWhitespace(afterStartNode);
-            cleanupWhitespace(afterEndNode);
+            lockedBlocks.push({
+                type,
+                topLevelNodes,
+                wrappedTextNodes,
+                hiddenWhitespaceNodes,
+                maskNode
+            });
           }
         });
+
+        // 若没有要处理的隐藏块，或者处于预览模式，直接退出，不发任何网络请求
+        if (lockedBlocks.length === 0 || isPreview) return;
+
+        // 【第 2 阶段：发起异步网络请求/读取缓存鉴权】
+        let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.topic?.id || helper?.getModel?.()?.id;
+        if (!topicId) {
+            const match = window.location.pathname.match(/\/t\/[^\/]+\/(\d+)/);
+            if (match) topicId = match[1];
+        }
+
+        let hasReplied = false;
+        const needsReplyCheck = lockedBlocks.some(b => b.type === "reply");
+        if (needsReplyCheck && currentUser && topicId) {
+            hasReplied = await checkUserReplied(currentUser, topicId);
+        }
+
+        // 【第 3 阶段：基于权限，对块进行无损解禁与恢复】
+        lockedBlocks.forEach(block => {
+            let isLocked = true;
+            let msgHtml = "";
+            let icon = "lock";
+
+            if (block.type === "login") {
+                if (currentUser) isLocked = false; 
+                else { msgHtml = txt.mask_login; icon = "lock"; }
+            } else if (block.type === "reply") {
+                if (!currentUser) { msgHtml = txt.mask_login_reply; icon = "lock"; }
+                else if (hasReplied || currentUser.admin || currentUser.moderator || currentUser.id === helper?.getModel?.()?.user_id) isLocked = false;
+                else { msgHtml = txt.mask_reply; icon = "reply"; }
+            }
+
+            if (isLocked) {
+                // 如果用户没权限，只需要更新一下面具上的文字提示即可
+                if (block.maskNode) {
+                    const textEl = block.maskNode.querySelector('.secure-text');
+                    if (textEl) textEl.innerHTML = msgHtml;
+                    const iconEl = block.maskNode.querySelector('use');
+                    if (iconEl) iconEl.setAttribute('href', '#' + icon);
+                }
+            } else {
+                // 如果用户有权限，无损撤销同步阶段的所有锁定操作，并原汁原味恢复空行！
+                if (block.maskNode) {
+                    let p = block.maskNode.parentNode;
+                    block.maskNode.remove();
+                    if (p && p.tagName === 'P') p.classList.remove('secure-mask-wrapper-p');
+                }
+
+                block.topLevelNodes.forEach(n => {
+                    if (n.nodeType === Node.ELEMENT_NODE) {
+                        n.classList.remove('secure-hidden-element');
+                    }
+                });
+
+                block.wrappedTextNodes.forEach(item => {
+                    let span = item.span;
+                    if (span && span.parentNode) {
+                        span.parentNode.insertBefore(item.textNode, span);
+                        span.remove();
+                    }
+                });
+
+                // 还原当初被隐藏的空行，保证发布者排版的原汁原味
+                block.hiddenWhitespaceNodes.forEach(n => {
+                    n.classList.remove('secure-hidden-element');
+                });
+
+                // 对刚解禁的节点执行外链护盾扫描
+                block.topLevelNodes.forEach(n => {
+                    if (n.nodeType === Node.ELEMENT_NODE) safeApplyLinkShield(n);
+                });
+            }
+        });
+
       } catch (err) {
         console.error("Secure Content Error:", err);
       }
@@ -303,6 +355,7 @@ export default apiInitializer("0.11", (api) => {
     (element, helper) => {
         applySecureContent(element, helper);
 
+        // 终极防线：监听 Callout 的异步渲染
         const observer = new MutationObserver((mutations) => {
             let shouldProcess = false;
             for (let m of mutations) {
