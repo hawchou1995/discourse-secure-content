@@ -124,54 +124,76 @@ export default apiInitializer("0.11", (api) => {
 
   function safeApplyLinkShield(targetNode) {
     if (typeof window.applyExternalLinkShield === 'function') {
-      try {
-        setTimeout(() => window.applyExternalLinkShield(targetNode), 50);
-      } catch (err) { }
+      try { setTimeout(() => window.applyExternalLinkShield(targetNode), 50); } catch (err) {}
     }
   }
 
-  // 靶向收缩相邻空行
-  function hideAdjacentBr(node, hiddenList) {
-      if (!node) return;
-      if (node.nodeType === Node.TEXT_NODE && node.nodeValue.trim() === "") {
-          if (node.nextSibling && node.nextSibling.tagName === 'BR') {
-              node.nextSibling.classList.add('secure-hidden-element');
-              hiddenList.push(node.nextSibling);
-          } else if (node.previousSibling && node.previousSibling.tagName === 'BR') {
-              node.previousSibling.classList.add('secure-hidden-element');
-              hiddenList.push(node.previousSibling);
+  // 【全新绝杀技】只针对原生 <p> 标签做边距压制，绝对不碰 Callouts 的虚拟 DOM
+  function cleanupSpacing(root) {
+      if (!root || !root.querySelectorAll) return;
+      root.querySelectorAll('p').forEach(p => {
+          let hasText = false;
+          let hasMask = false;
+          let hasVisibleElement = false;
+
+          p.childNodes.forEach(child => {
+              if (child.nodeType === Node.TEXT_NODE && child.nodeValue.replace(/[\u200B-\u200D\uFEFF]/g, '').trim() !== "") {
+                  hasText = true;
+              } else if (child.nodeType === Node.ELEMENT_NODE) {
+                  if (child.classList.contains('secure-hidden-element') && child.style.display === 'none') return;
+                  if (child.classList.contains('secure-content-mask') || child.classList.contains('secure-preview-badge')) {
+                      hasMask = true;
+                  } else if (child.tagName !== 'BR') {
+                      hasVisibleElement = true;
+                  }
+              }
+          });
+
+          if (!hasText && !hasVisibleElement) {
+              if (hasMask) {
+                  // 这个 <p> 里只剩下面具了，抹杀它的上下边距
+                  p.classList.add('secure-mask-p');
+                  p.dataset.origMargin = p.style.margin;
+                  p.dataset.origPadding = p.style.padding;
+                  p.style.setProperty('margin', '0', 'important');
+                  p.style.setProperty('padding', '0', 'important');
+                  // 抹杀里面的多余回车
+                  p.querySelectorAll('br').forEach(br => {
+                      if (!br.classList.contains('secure-hidden-element')) {
+                          br.classList.add('secure-hidden-element', 'secure-br-hidden');
+                          br.dataset.origDisplay = br.style.display;
+                          br.style.setProperty('display', 'none', 'important');
+                      }
+                  });
+              } else {
+                  // 这个 <p> 里连面具都没有（彻底空了），直接干掉
+                  p.classList.add('secure-empty-p');
+                  p.dataset.origDisplay = p.style.display;
+                  p.style.setProperty('display', 'none', 'important');
+              }
           }
-      }
+      });
   }
 
-  // 【核心新增】外科手术级的空壳修剪器。从里向外靶向切除因隐藏内容而留下的空架子
-  function hideIfEmpty(el, hiddenList, rootElement) {
-      if (!el || el === rootElement || el === document.body) return;
-      
-      // 如果当前容器包含我们插入的面具，那是绝对不能隐藏的，必须留着给用户看
-      if (el.querySelector('.secure-content-mask') || el.classList.contains('secure-content-mask')) return;
-      if (el.querySelector('.secure-preview-badge') || el.classList.contains('secure-preview-badge')) return;
-
-      let hasVisible = Array.from(el.childNodes).some(child => {
-          if (child.nodeType === Node.ELEMENT_NODE) {
-              if (child.classList.contains('secure-hidden-element')) return false;
-              if (child.tagName === 'BR') return false;
-              // Callout 的外壳配件不能算作正文
-              if (child.classList.contains('callout-title') || child.classList.contains('callout-icon') || child.classList.contains('callout-fold')) return false;
-              return true;
-          }
-          if (child.nodeType === Node.TEXT_NODE) {
-              return child.nodeValue.trim() !== "";
-          }
-          return false;
+  function restoreSpacing(root) {
+      if (!root || !root.querySelectorAll) return;
+      root.querySelectorAll('.secure-mask-p').forEach(p => {
+          p.classList.remove('secure-mask-p');
+          p.style.margin = p.dataset.origMargin || '';
+          p.style.padding = p.dataset.origPadding || '';
+          if (p.style.length === 0) p.removeAttribute('style');
+          
+          p.querySelectorAll('.secure-br-hidden').forEach(br => {
+              br.classList.remove('secure-hidden-element', 'secure-br-hidden');
+              br.style.display = br.dataset.origDisplay || '';
+              if (br.style.length === 0) br.removeAttribute('style');
+          });
       });
-
-      // 如果这个容器空了，切掉它，然后继续往外层追溯！(完美解决多层嵌套空行)
-      if (!hasVisible) {
-          el.classList.add('secure-hidden-element');
-          hiddenList.push(el);
-          hideIfEmpty(el.parentNode, hiddenList, rootElement);
-      }
+      root.querySelectorAll('.secure-empty-p').forEach(p => {
+          p.classList.remove('secure-empty-p');
+          p.style.display = p.dataset.origDisplay || '';
+          if (p.style.length === 0) p.removeAttribute('style');
+      });
   }
 
   async function applySecureContent(element, helper) {
@@ -248,9 +270,7 @@ export default apiInitializer("0.11", (api) => {
             });
 
             let wrappedTextNodes = [];
-            let hiddenWhitespaceNodes = [];
             let maskNode = null;
-            let maskParentP = null;
 
             if (isPreview) {
                 maskNode = document.createElement("div");
@@ -258,49 +278,39 @@ export default apiInitializer("0.11", (api) => {
                 maskNode.textContent = txt.preview;
                 afterStartNode.parentNode.insertBefore(maskNode, afterStartNode);
             } else {
-                // 第 1 步：优先安插遮罩
-                maskNode = renderMask(type, "lock", txt["mask_" + type]); 
-                afterStartNode.parentNode.insertBefore(maskNode, afterStartNode);
-
-                // 第 2 步：将原本应锁死的内容隐藏
+                // 安全隐藏节点，硬编码 display:none 防止 Glimmer 冲突
                 topLevelNodes.forEach(n => {
                     if (n.nodeType === Node.ELEMENT_NODE) {
                         n.classList.add('secure-hidden-element');
+                        n.dataset.secureOrigDisplay = n.style.display || '';
+                        n.style.setProperty('display', 'none', 'important');
                     } else if (n.nodeType === Node.TEXT_NODE && n.nodeValue.trim() !== "") {
                         let span = document.createElement('span');
                         span.classList.add('secure-hidden-element');
+                        span.style.setProperty('display', 'none', 'important');
                         n.parentNode.insertBefore(span, n);
                         span.appendChild(n);
                         wrappedTextNodes.push({ textNode: n, span: span });
                     }
                 });
 
-                // 第 3 步：强制清除面具自带的段落上下边距，这是扼杀大部分缝隙的关键
-                maskParentP = maskNode.parentNode;
-                if (maskParentP && maskParentP.tagName === 'P') {
-                    maskParentP.style.setProperty('margin-bottom', '0', 'important');
-                    maskParentP.style.setProperty('margin-top', '0', 'important');
-                }
-
-                // 第 4 步：靶向清除因内容隐藏而暴露的孤立空行和多层 Callout 空壳
-                hideAdjacentBr(afterStartNode, hiddenWhitespaceNodes);
-                hideAdjacentBr(afterEndNode, hiddenWhitespaceNodes);
-                hideIfEmpty(afterStartNode.parentNode, hiddenWhitespaceNodes, element);
-                hideIfEmpty(afterEndNode.parentNode, hiddenWhitespaceNodes, element);
+                maskNode = renderMask(type, "lock", txt["mask_" + type]); 
+                afterStartNode.parentNode.insertBefore(maskNode, afterStartNode);
             }
 
             lockedBlocks.push({
                 type,
                 topLevelNodes,
                 wrappedTextNodes,
-                hiddenWhitespaceNodes,
-                maskNode,
-                maskParentP
+                maskNode
             });
           }
         });
 
         if (lockedBlocks.length === 0 || isPreview) return;
+
+        // 统一清理当前 DOM 域下所有由 Markdown 换行产生多余留白的 <p> 标签
+        cleanupSpacing(element);
 
         let topicId = helper?.getModel?.()?.topic_id || helper?.getModel?.()?.topic?.id || helper?.getModel?.()?.id;
         if (!topicId) {
@@ -314,7 +324,6 @@ export default apiInitializer("0.11", (api) => {
             hasReplied = await checkUserReplied(currentUser, topicId);
         }
 
-        // 最终阶段：依据权限，原封不动地解禁
         lockedBlocks.forEach(block => {
             let isLocked = true;
             let msgHtml = "";
@@ -338,13 +347,15 @@ export default apiInitializer("0.11", (api) => {
                 }
             } else {
                 if (block.maskNode) block.maskNode.remove();
-                if (block.maskParentP) {
-                    block.maskParentP.style.removeProperty('margin-bottom');
-                    block.maskParentP.style.removeProperty('margin-top');
-                }
 
+                // 完美还原原有的布局与节点，不再牵涉 Glimmer 组件逻辑
                 block.topLevelNodes.forEach(n => {
-                    if (n.nodeType === Node.ELEMENT_NODE) n.classList.remove('secure-hidden-element');
+                    if (n.nodeType === Node.ELEMENT_NODE) {
+                        n.classList.remove('secure-hidden-element');
+                        n.style.display = n.dataset.secureOrigDisplay || '';
+                        if (n.style.length === 0) n.removeAttribute('style');
+                        safeApplyLinkShield(n);
+                    }
                 });
                 block.wrappedTextNodes.forEach(item => {
                     if (item.span && item.span.parentNode) {
@@ -352,17 +363,13 @@ export default apiInitializer("0.11", (api) => {
                         item.span.remove();
                     }
                 });
-                
-                // 将被作为空壳收容的所有的 P 标签、多级 Callout 边框，瞬间解禁恢复！
-                block.hiddenWhitespaceNodes.forEach(n => {
-                    n.classList.remove('secure-hidden-element');
-                });
-                
-                block.topLevelNodes.forEach(n => {
-                    if (n.nodeType === Node.ELEMENT_NODE) safeApplyLinkShield(n);
-                });
             }
         });
+
+        // 如果用户已解锁，恢复 <p> 标签的所有边距，保证原 Markdown 排版无损还原
+        if (lockedBlocks.some(b => !b.isLocked)) {
+             restoreSpacing(element);
+        }
 
       } catch (err) {
         console.error("Secure Content Error:", err);
